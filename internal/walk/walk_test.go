@@ -253,6 +253,21 @@ func TestTestFilesAreSkippedUnlessAsked(t *testing.T) {
 	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"feed_test.go"}) {
 		t.Fatalf("a test file named on the command line is searched: %v", got)
 	}
+
+	res, _ = Walk([]string{"web/__tests__", "testdata"}, Options{})
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"testdata/feed.xml", "web/__tests__/a.js"}) {
+		t.Fatalf("a test folder named on the command line is searched: %v", got)
+	}
+}
+
+func TestOnlyTextTestFilesAreCounted(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{"a.go": "package a\n", "a_test.go": "package a\n", "testdata/logo.png": "\x89PNG\x00\x00"})
+	t.Chdir(dir)
+	res, _ := Walk([]string{"."}, Options{})
+	if res.Tests != 1 {
+		t.Fatalf("binary test data isn't a skipped test file; got %d", res.Tests)
+	}
 }
 
 func TestIsTest(t *testing.T) {
@@ -263,6 +278,16 @@ func TestIsTest(t *testing.T) {
 		"tests/test_api.py":              true,
 		"pkg/parse_test.py":              true,
 		"spec/models/user_spec.rb":       true,
+		"Tests/AppTests/FooTests.swift":  true,
+		"src/FooTest.php":                true,
+		"app/tests.py":                   true,
+		"base/strings_unittest.cc":       true,
+		"src/FooIT.java":                 true,
+		"src/FooSpec.kt":                 true,
+		"cypress/e2e/login.cy.ts":        true,
+		"src/__mocks__/api.js":           true,
+		"Foo.Tests/Bar.cs":               true,
+		"api/spec/openapi.yaml":          false,
 		"src/test/java/FooTest.java":     true,
 		"app/FooTests.cs":                true,
 		"internal/reader/testdata/a.xml": true,

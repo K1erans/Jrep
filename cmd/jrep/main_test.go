@@ -327,4 +327,11 @@ func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
 	if !strings.Contains(h.out.String(), "src/billing/retry_test.go:1-3") || h.errOut.String() != "" {
 		t.Fatalf("out %q err %q", h.out.String(), h.errOut.String())
 	}
+
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d", code)
+	}
+	if want := "jrep: 1 test file not searched (use --tests to include)\n"; h.errOut.String() != want {
+		t.Fatalf("skipped tests are reported even when something matched; stderr %q", h.errOut.String())
+	}
 }

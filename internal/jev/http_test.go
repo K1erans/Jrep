@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -216,7 +217,7 @@ func TestRealAPISmoke(t *testing.T) {
 func TestRequestsLargerThanTheBurstAreChargedInFull(t *testing.T) {
 	c, _ := server(t, func(w http.ResponseWriter, r *http.Request, _ int) { ok(w) })
 	big := req
-	big.State.Code = strings.Repeat("x", 3000) // ~1150 tokens at bytes ÷ 2.75
+	big.State.Code = strings.Repeat("x", 3000) // ~1450 tokens: 300 overhead + bytes ÷ 2.75
 	c = NewHTTP("k", HTTPOptions{BaseURL: c.opts.BaseURL, RequestsPerSecond: 1e6, TokensPerSecond: 3000})
 	start := time.Now()
 	for range 4 {
@@ -224,7 +225,7 @@ func TestRequestsLargerThanTheBurstAreChargedInFull(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// ~4600 tokens at 3000/s with a 600-token burst is ~1.3 s. Capping each
+	// ~5800 tokens at 3000/s with a 600-token burst is ~1.7 s. Capping each
 	// request at the burst would count only 2400 tokens and take ~0.6 s.
 	if d := time.Since(start); d < time.Second {
 		t.Fatalf("4 requests of ~1150 tokens at 3000 tokens/s took only %v", d)
@@ -258,7 +259,8 @@ func TestThrottlingHalvesTheRateThenItRecovers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rps := func() float64 { r, _ := c.Limits(); return r }
+	// Rounded, since the share is a running float sum.
+	rps := func() float64 { r, _ := c.Limits(); return math.Round(r*1000) / 1000 }
 
 	throttle.Store(true)
 	ask() // a 429, then a success
@@ -291,7 +293,7 @@ func TestThrottlingHalvesTheRateThenItRecovers(t *testing.T) {
 		throttle.Store(true)
 		ask()
 	}
-	if got := rps(); got != 100.0/16 {
+	if got := rps(); got != 6.25 {
 		t.Fatalf("the rate never drops below 1/16 of the ceiling, got %v", got)
 	}
 }

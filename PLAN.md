@@ -196,7 +196,6 @@ internal/output/        text and JSON printing
 
 - **Throughput:** measured on miniflux (658 files): a full scan took 25.6 s at the documented limits and 8.3 s at 4x. Requests take ~235 ms (p90 ~300 ms) regardless of rate. Repeat searches are fast once cached.
 - **Rate limits** can change without notice.
-- **Latency** isn't measured yet. The claimed 70–500 ms per call needs checking.
 - **Chunk size vs accuracy:** TypeSafe notes accuracy shifts as the state grows. Tune after measuring.
 - **Question wording:** how a search is phrased for Noul (e.g. "The `code` …") affects accuracy. Test a few templates.
 - **Privacy:** every chunk searched is sent to TypeSafe.

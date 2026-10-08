@@ -25,8 +25,9 @@ type Options struct {
 
 // Default gives most functions a chunk of their own, so results point at
 // one function rather than a run of them; only pieces under 10 lines merge.
-// Small chunks cost requests, not tokens: each Jev call is ~235 ms and the
-// client runs many in parallel. 48 KB is ~17.5K tokens at bytes ÷ 2.75,
+// Small chunks cost requests: each Jev call is ~235 ms (the client runs
+// many in parallel) and carries a fixed ~300-token overhead, so going much
+// smaller mostly buys overhead. 48 KB is ~17.5K tokens at bytes ÷ 2.75,
 // well inside Jev's 32K state limit.
 var Default = Options{MinLines: 10, MaxLines: 300, MaxBytes: 48 << 10}
 

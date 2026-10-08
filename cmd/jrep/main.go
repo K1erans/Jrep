@@ -125,6 +125,9 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		return exitError, err
 	}
 	a.reportOversize(files.Oversize, cfg.MaxFileSize)
+	if files.Tests > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
+	}
 
 	chunks, err := search.Load(files.Files, chunk.Default)
 	if err != nil {
@@ -189,9 +192,6 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		if len(r.Matches) > 0 {
 			return exitMatch, nil
 		}
-	}
-	if files.Tests > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
 	}
 	return exitNoMatch, nil
 }

@@ -34,7 +34,7 @@ type Result struct {
 	Root     string // git top-level folder, or the first search path outside git
 	Files    []File // sorted by Path
 	Oversize []File // text files skipped for being over MaxFileSize
-	Tests    int    // test files skipped because Options.Tests was off
+	Tests    int    // text files skipped as tests because Options.Tests was off
 }
 
 // Walk lists text files under paths. Named files are always included, even
@@ -52,22 +52,24 @@ func Walk(paths []string, opts Options) (Result, error) {
 	res.Root = root
 
 	seen := map[string]bool{}
-	add := func(display string, named bool) error {
+	// add lists one file found under the named path base. Only the part of
+	// its path below base is checked for tests, so naming a test file or
+	// folder searches it.
+	add := func(display, base string) error {
 		display = filepath.Clean(display)
 		if seen[display] {
 			return nil
 		}
 		seen[display] = true
-		rel := relTo(root, display)
-		if !named && !opts.Tests && IsTest(rel) {
-			res.Tests++
-			return nil
-		}
 		f, ok, err := inspect(display)
 		if err != nil || !ok {
 			return err
 		}
-		f.Rel = rel
+		f.Rel = relTo(root, display)
+		if below, err := filepath.Rel(base, display); err == nil && !opts.Tests && IsTest(filepath.ToSlash(below)) {
+			res.Tests++
+			return nil
+		}
 		if f.Size > opts.MaxFileSize && opts.MaxFileSize > 0 {
 			res.Oversize = append(res.Oversize, f)
 		} else {
@@ -82,7 +84,7 @@ func Walk(paths []string, opts Options) (Result, error) {
 			return res, err
 		}
 		if !info.IsDir() {
-			if err := add(p, true); err != nil {
+			if err := add(p, p); err != nil {
 				return res, err
 			}
 			continue
@@ -97,7 +99,7 @@ func Walk(paths []string, opts Options) (Result, error) {
 			return res, err
 		}
 		for _, f := range list {
-			if err := add(f, false); err != nil {
+			if err := add(f, p); err != nil {
 				return res, err
 			}
 		}

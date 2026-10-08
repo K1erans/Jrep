@@ -37,7 +37,8 @@ type HTTPOptions struct {
 // Jev's token count for a request is a fixed overhead plus its payload.
 // Fitting 5,400 requests from two scans of a Go repo gave ~290 tokens per
 // request (TypeSafe's docs show 296 for a one-line state) plus one token
-// per ~2.96 payload bytes. Both are rounded the safe way for a client-side
+// per ~2.96 payload bytes. (A first, overhead-blind estimate of 2.83 bytes
+// per token mixed the two.) Both are rounded the safe way for a client-side
 // limit, which must overestimate rather than under.
 const (
 	requestOverheadTokens = 300
@@ -112,8 +113,8 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("TypeSafe API error %d: %s", e.status, e.body)
 }
 
-// throttled reports a rate limit (429) or overload (529) reply.
-func throttled(err error) bool {
+// isThrottled reports a rate limit (429) or overload (529) reply.
+func isThrottled(err error) bool {
 	var se *statusError
 	return errors.As(err, &se) && (se.status == http.StatusTooManyRequests || se.status == 529)
 }
@@ -143,11 +144,11 @@ func (c *HTTP) Ask(ctx context.Context, req Request) (Response, error) {
 		}
 		resp, err := c.post(ctx, payload, len(req.Questions))
 		if err == nil {
-			c.limits.succeeded()
+			c.limits.recordSuccess()
 			return resp, nil
 		}
-		if throttled(err) {
-			c.limits.throttled()
+		if isThrottled(err) {
+			c.limits.recordThrottle()
 		}
 		if ctx.Err() != nil {
 			return Response{}, ctx.Err()

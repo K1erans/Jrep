@@ -31,15 +31,15 @@ type limits struct {
 }
 
 func newLimits(requestsPerSecond, tokensPerSecond float64) *limits {
-	// Small bursts: a fresh limiter must not send a full second's quota at once.
-	return &limits{
+	l := &limits{
 		ceilReq: requestsPerSecond,
 		ceilTok: tokensPerSecond,
-		share:   1,
 		now:     time.Now,
-		req:     rate.NewLimiter(rate.Limit(requestsPerSecond), max(1, int(math.Ceil(requestsPerSecond/10)))),
-		tok:     rate.NewLimiter(rate.Limit(tokensPerSecond), max(1, int(tokensPerSecond/5))),
+		req:     rate.NewLimiter(0, 1),
+		tok:     rate.NewLimiter(0, 1),
 	}
+	l.set(1)
+	return l
 }
 
 // wait blocks until one request of the given token cost may be sent. A
@@ -59,8 +59,8 @@ func (l *limits) wait(ctx context.Context, tokens int) error {
 	return nil
 }
 
-// throttled records a 429 or 529.
-func (l *limits) throttled() {
+// recordThrottle notes a 429 or 529.
+func (l *limits) recordThrottle() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := l.now()
@@ -71,8 +71,8 @@ func (l *limits) throttled() {
 	l.set(max(minShare, l.share/2))
 }
 
-// succeeded records a request that wasn't throttled.
-func (l *limits) succeeded() {
+// recordSuccess notes a request that wasn't throttled.
+func (l *limits) recordSuccess() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.share >= 1 {
@@ -90,10 +90,16 @@ func (l *limits) succeeded() {
 	l.set(min(1, l.share+raiseStep))
 }
 
+// set applies a share of the ceiling. Bursts shrink with the rate, so a
+// backed-off client can't send a burst sized for full speed: requests get
+// a tenth of a second's worth and tokens a fifth.
 func (l *limits) set(share float64) {
 	l.share = share
-	l.req.SetLimit(rate.Limit(l.ceilReq * share))
-	l.tok.SetLimit(rate.Limit(l.ceilTok * share))
+	r, t := l.ceilReq*share, l.ceilTok*share
+	l.req.SetLimit(rate.Limit(r))
+	l.req.SetBurst(max(1, int(math.Ceil(r/10))))
+	l.tok.SetLimit(rate.Limit(t))
+	l.tok.SetBurst(max(1, int(t/5)))
 }
 
 func (l *limits) current() (requestsPerSecond, tokensPerSecond float64) {

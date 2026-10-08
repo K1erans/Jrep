@@ -15,7 +15,7 @@ jrep "retries failed payments" src/
 0.94  src/billing/retry.ts:12-80        retryFailedPayment(invoice, attempt)
 ```
 
-Every search goes through Jev, and there is no regex mode. Files are split into function- or block-sized chunks and asked about in parallel, within TypeSafe's rate limits. Answers are cached per repo, so repeat searches, and the same search at a different threshold, cost nothing. An optional keyword pre-pass (`-s`) cuts cost on big repos. Without `-s`, nothing is filtered.
+Every search goes through Jev, and there is no regex mode. Files are split into function- or block-sized chunks and asked about in parallel, backing off whenever TypeSafe signals its rate limit. Answers are cached per repo, so repeat searches, and the same search at a different threshold, cost nothing. An optional keyword pre-pass (`-s`) cuts cost on big repos. Without `-s`, nothing is filtered.
 
 ## User Stories
 
@@ -63,7 +63,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 41. As a developer, I want the model pinned (`jev-1.13.0`) and overridable with `--model`, so that results don't drift when TypeSafe moves an alias.
 42. As a developer, I want the API key read from `TYPESAFE_API_KEY` and never passed as a flag, so that it stays out of shell history and logs.
 43. As a developer, I want searches answered entirely from cache to work without a key, so that a missing key only matters when Jev is needed.
-44. As a developer, I want requests and tokens per second limited on the client, defaulting to TypeSafe's published limits and configurable, so that scans don't hit 429s when limits change.
+44. As a developer, I want requests and tokens per second limited on the client, with a configurable ceiling that backs off on 429s and recovers, so that scans run as fast as TypeSafe allows without hammering it when limits change.
 45. As a developer, I want 429 and 529 replies retried with exponential backoff that honours `retry-after`, so that brief overloads don't fail a scan.
 46. As a developer, I want clear errors for a bad key or a rejected request, so that I can fix setup quickly.
 47. As a developer, I want Ctrl-C to stop a search promptly and keep the answers saved so far, so that interrupting costs nothing extra.
@@ -99,5 +99,5 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 ## Further Notes
 
 - Every chunk searched is sent to TypeSafe. That is the privacy trade-off.
-- TypeSafe says rate limits "can change without notice". The token-to-byte ratio, latency per chunk size and accuracy against chunk size are all unmeasured, and step 8 should settle them.
+- TypeSafe says rate limits "can change without notice". Measured on 2026-10-08 against miniflux: ~235 ms per call regardless of rate; no 429s even with 12 scans at once (peak 987 req/s); each request costs ~290 tokens plus one per ~2.96 bytes. Accuracy against chunk size is still unmeasured beyond the 12-task agent runs.
 - Question wording affects accuracy, so templates should be tested once the key is available. TypeSafe's agent skill may help.
