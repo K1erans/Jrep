@@ -20,6 +20,7 @@ const binarySniffLen = 8 << 10
 
 type Options struct {
 	NoIgnore    bool  // also list gitignored files
+	Tests       bool  // also list test files and test data (see IsTest)
 	MaxFileSize int64 // skip larger files; 0 means no limit
 }
 
@@ -33,10 +34,12 @@ type Result struct {
 	Root     string // git top-level folder, or the first search path outside git
 	Files    []File // sorted by Path
 	Oversize []File // text files skipped for being over MaxFileSize
+	Tests    int    // test files skipped because Options.Tests was off
 }
 
 // Walk lists text files under paths. Named files are always included, even
-// if ignored; directories follow .gitignore unless opts.NoIgnore is set.
+// if ignored or tests; directories follow .gitignore unless opts.NoIgnore is
+// set, and skip test files unless opts.Tests is set.
 func Walk(paths []string, opts Options) (Result, error) {
 	var res Result
 	if len(paths) == 0 {
@@ -49,17 +52,22 @@ func Walk(paths []string, opts Options) (Result, error) {
 	res.Root = root
 
 	seen := map[string]bool{}
-	add := func(display string) error {
+	add := func(display string, named bool) error {
 		display = filepath.Clean(display)
 		if seen[display] {
 			return nil
 		}
 		seen[display] = true
+		rel := relTo(root, display)
+		if !named && !opts.Tests && IsTest(rel) {
+			res.Tests++
+			return nil
+		}
 		f, ok, err := inspect(display)
 		if err != nil || !ok {
 			return err
 		}
-		f.Rel = relTo(root, display)
+		f.Rel = rel
 		if f.Size > opts.MaxFileSize && opts.MaxFileSize > 0 {
 			res.Oversize = append(res.Oversize, f)
 		} else {
@@ -74,7 +82,7 @@ func Walk(paths []string, opts Options) (Result, error) {
 			return res, err
 		}
 		if !info.IsDir() {
-			if err := add(p); err != nil {
+			if err := add(p, true); err != nil {
 				return res, err
 			}
 			continue
@@ -89,7 +97,7 @@ func Walk(paths []string, opts Options) (Result, error) {
 			return res, err
 		}
 		for _, f := range list {
-			if err := add(f); err != nil {
+			if err := add(f, false); err != nil {
 				return res, err
 			}
 		}

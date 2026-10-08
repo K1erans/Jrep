@@ -300,3 +300,31 @@ func TestRealWiringAgainstAFakeServer(t *testing.T) {
 		t.Fatalf("second run: exit %d, %d calls in total", code, calls.Load())
 	}
 }
+
+func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
+	files := map[string]string{"src/billing/retry_test.go": "package billing\n\nfunc TestCharge() { chargeYaml() }\n"}
+	for k, v := range billing {
+		files[k] = v
+	}
+	project(t, files)
+	fake := scorer()
+	h := newHarness(fake)
+	if code := h.run("parses yaml"); code != exitNoMatch {
+		t.Fatalf("exit %d", code)
+	}
+	for _, r := range fake.Requests() {
+		if strings.HasSuffix(r.State.Path, "_test.go") {
+			t.Fatal("test files aren't sent by default")
+		}
+	}
+	if want := "jrep: 1 test file not searched (use --tests to include)\n"; h.errOut.String() != want {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+
+	if code := h.run("--tests", "parses yaml"); code != exitMatch {
+		t.Fatalf("--tests: exit %d, %s", code, h.errOut.String())
+	}
+	if !strings.Contains(h.out.String(), "src/billing/retry_test.go:1-3") || h.errOut.String() != "" {
+		t.Fatalf("out %q err %q", h.out.String(), h.errOut.String())
+	}
+}

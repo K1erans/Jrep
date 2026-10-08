@@ -216,3 +216,67 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+func TestTestFilesAreSkippedUnlessAsked(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{
+		"feed.go":            "package feed\n",
+		"feed_test.go":       "package feed\n",
+		"testdata/feed.xml":  "<rss/>\n",
+		"web/app.ts":         "x\n",
+		"web/app.test.ts":    "x\n",
+		"web/__tests__/a.js": "x\n",
+		"py/test_parse.py":   "x\n",
+		"py/conftest.py":     "x\n",
+		"latest/notes.md":    "x\n", // "test" inside a word isn't a test folder
+		"contest.go":         "package feed\n",
+	})
+	t.Chdir(dir)
+
+	res, err := Walk([]string{"."}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"contest.go", "feed.go", "latest/notes.md", "web/app.ts"}) {
+		t.Fatalf("files %v", got)
+	}
+	if res.Tests != 6 {
+		t.Fatalf("want 6 test files counted as skipped, got %d", res.Tests)
+	}
+
+	res, _ = Walk([]string{"."}, Options{Tests: true})
+	if len(res.Files) != 10 || res.Tests != 0 {
+		t.Fatalf("--tests should include all 10 files, got %v (skipped %d)", paths(res.Files), res.Tests)
+	}
+
+	res, _ = Walk([]string{"feed_test.go"}, Options{})
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"feed_test.go"}) {
+		t.Fatalf("a test file named on the command line is searched: %v", got)
+	}
+}
+
+func TestIsTest(t *testing.T) {
+	cases := map[string]bool{
+		"internal/model/feed_test.go":    true,
+		"src/app.spec.tsx":               true,
+		"src/app.test.mjs":               true,
+		"tests/test_api.py":              true,
+		"pkg/parse_test.py":              true,
+		"spec/models/user_spec.rb":       true,
+		"src/test/java/FooTest.java":     true,
+		"app/FooTests.cs":                true,
+		"internal/reader/testdata/a.xml": true,
+		"fixtures/users.json":            true,
+		"__snapshots__/a.snap":           true,
+		"internal/model/feed.go":         false,
+		"src/latest.ts":                  false,
+		"src/attestation.go":             false,
+		"docs/testing-guide.md":          false,
+		"src/Contest.java":               false,
+	}
+	for path, want := range cases {
+		if got := IsTest(path); got != want {
+			t.Errorf("IsTest(%q) = %v, want %v", path, got, want)
+		}
+	}
+}

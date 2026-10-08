@@ -120,7 +120,7 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		return exitMatch, a.clearCache(root)
 	}
 
-	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, MaxFileSize: cfg.MaxFileSize})
+	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: cfg.Tests, MaxFileSize: cfg.MaxFileSize})
 	if err != nil {
 		return exitError, err
 	}
@@ -190,7 +190,17 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 			return exitMatch, nil
 		}
 	}
+	if files.Tests > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
+	}
 	return exitNoMatch, nil
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // reportOversize names skipped files on stderr so they are never skipped
@@ -207,12 +217,8 @@ func (a app) reportOversize(files []walk.File, limit int64) {
 		}
 		names = append(names, f.Path)
 	}
-	noun := "files"
-	if len(files) == 1 {
-		noun = "file"
-	}
 	fmt.Fprintf(a.stderr, "jrep: skipped %d %s over %s: %s (use --max-filesize 0 to include)\n",
-		len(files), noun, formatSize(limit), strings.Join(names, ", "))
+		len(files), plural(len(files), "file", "files"), formatSize(limit), strings.Join(names, ", "))
 }
 
 // envRate reads an optional positive rate limit override.
