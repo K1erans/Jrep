@@ -295,3 +295,20 @@ func TestThrottlingHalvesTheRateThenItRecovers(t *testing.T) {
 		t.Fatalf("the rate never drops below 1/16 of the ceiling, got %v", got)
 	}
 }
+
+func TestSmallRequestsAreChargedTheFixedOverhead(t *testing.T) {
+	c, _ := server(t, func(w http.ResponseWriter, r *http.Request, _ int) { ok(w) })
+	c = NewHTTP("k", HTTPOptions{BaseURL: c.opts.BaseURL, RequestsPerSecond: 1e6, TokensPerSecond: 3000})
+	start := time.Now()
+	for range 10 {
+		if _, err := c.Ask(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Each tiny request is ~300 tokens of fixed overhead plus ~100 of
+	// payload: ~4000 tokens at 3000/s with a 600-token burst is ~1.1 s.
+	// Counting bytes alone would charge ~1000 tokens and finish at once.
+	if d := time.Since(start); d < 900*time.Millisecond {
+		t.Fatalf("10 small requests at 3000 tokens/s took only %v", d)
+	}
+}

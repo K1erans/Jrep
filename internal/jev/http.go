@@ -34,10 +34,15 @@ type HTTPOptions struct {
 	Timeout           time.Duration // per attempt; default 60 s
 }
 
-// bytesPerToken is how many request bytes make one Jev token. Measured at
-// 2.83 on a Go repo's JSON payloads; rounding down overestimates tokens,
-// the safe side for a client-side limit.
-const bytesPerToken = 2.75
+// Jev's token count for a request is a fixed overhead plus its payload.
+// Fitting 5,400 requests from two scans of a Go repo gave ~290 tokens per
+// request (TypeSafe's docs show 296 for a one-line state) plus one token
+// per ~2.96 payload bytes. Both are rounded the safe way for a client-side
+// limit, which must overestimate rather than under.
+const (
+	requestOverheadTokens = 300
+	bytesPerToken         = 2.75
+)
 
 // HTTP is the Jev client for TypeSafe's API. It is safe for concurrent use;
 // all callers share one adaptive rate limiter.
@@ -130,7 +135,7 @@ func (c *HTTP) Ask(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	tokens := int(math.Ceil(float64(len(payload)) / bytesPerToken))
+	tokens := requestOverheadTokens + int(math.Ceil(float64(len(payload))/bytesPerToken))
 
 	for attempt := 0; ; attempt++ {
 		if err := c.limits.wait(ctx, tokens); err != nil {

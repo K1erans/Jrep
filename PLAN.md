@@ -99,7 +99,7 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 - Split at real function, method, class and type boundaries from the syntax tree.
 - For languages without a grammar, or files that fail to parse, fall back to a plain-Go splitter: top-level declarations by indentation, then blank-line boundaries.
 - Merge tiny pieces, and split anything over ~300 lines.
-- Keep each chunk well inside Jev's limit of 32K tokens for state plus the longest question. Estimate tokens as bytes ÷ 2.75 to stay on the safe side (measured: 2.83 bytes per token on Go code sent as JSON).
+- Keep each chunk well inside Jev's limit of 32K tokens for state plus the longest question. Estimate tokens as bytes ÷ 2.75 to stay on the safe side (measured: ~2.96 bytes per token on Go code sent as JSON). Every request also costs a fixed ~290 tokens, so very small chunks are mostly overhead.
 - Record each chunk's signature (the function or class header) for output.
 - `gotreesitter` is pre-1.0 and releases often: pin its version, and check how much the bundled grammars add to binary size. If it's large, include only the common languages.
 
