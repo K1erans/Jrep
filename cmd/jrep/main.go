@@ -48,10 +48,24 @@ func realApp(stdout, stderr io.Writer) app {
 		stdout: stdout,
 		stderr: stderr,
 		client: func(string) jev.Client { return noKey{} },
-		openCache: func(string, string) (cache.Cache, func() error, error) {
-			return cache.NewMemory(), func() error { return nil }, nil
+		openCache: func(root, model string) (cache.Cache, func() error, error) {
+			dir, err := cache.Dir()
+			if err != nil {
+				return nil, nil, err
+			}
+			c, err := cache.Open(cache.Path(dir, root), model)
+			if err != nil {
+				return nil, nil, err
+			}
+			return c, c.Close, nil
 		},
-		clearCache: func(string) error { return nil },
+		clearCache: func(root string) error {
+			dir, err := cache.Dir()
+			if err != nil {
+				return err
+			}
+			return cache.Clear(cache.Path(dir, root))
+		},
 	}
 }
 
@@ -101,9 +115,11 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		return exitError, err
 	}
 
+	// A broken cache costs money, not correctness: warn and carry on.
 	store, closeStore, err := a.openCache(files.Root, cfg.Model)
 	if err != nil {
-		return exitError, err
+		fmt.Fprintf(a.stderr, "jrep: warning: cache unavailable, answers won't be saved: %v\n", err)
+		store, closeStore = cache.NewMemory(), func() error { return nil }
 	}
 	defer closeStore()
 

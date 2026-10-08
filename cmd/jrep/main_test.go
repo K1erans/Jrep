@@ -162,3 +162,41 @@ func TestRepeatSearchIsServedFromCache(t *testing.T) {
 		t.Fatalf("lower threshold should show both files:\n%s", h.out.String())
 	}
 }
+
+func TestClearCacheForgetsAnswers(t *testing.T) {
+	project(t, billing)
+	t.Setenv("JREP_CACHE_DIR", t.TempDir())
+	fake := scorer()
+	h := newHarness(fake)
+	disk := realApp(&h.out, &h.errOut)
+	h.openCache, h.clearCache = disk.openCache, disk.clearCache
+
+	h.run("retries failed payments")
+	calls := len(fake.Requests())
+	h.run("retries failed payments")
+	if len(fake.Requests()) != calls {
+		t.Fatal("second search should come from the SQLite cache")
+	}
+	if code := h.run("--clear-cache"); code != exitMatch {
+		t.Fatalf("clear: exit %d, %s", code, h.errOut.String())
+	}
+	h.run("retries failed payments")
+	if len(fake.Requests()) != 2*calls {
+		t.Fatal("after --clear-cache every chunk is asked again")
+	}
+}
+
+func TestUnusableCacheWarnsButSearches(t *testing.T) {
+	project(t, billing)
+	blocker := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(blocker, nil, 0o644)
+	t.Setenv("JREP_CACHE_DIR", filepath.Join(blocker, "sub")) // can't create a folder under a file
+	h := newHarness(scorer())
+	h.openCache = realApp(&h.out, &h.errOut).openCache
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(h.errOut.String(), "cache unavailable") {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+}
