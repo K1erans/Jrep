@@ -38,6 +38,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 17. As a developer, I want ignore rules inside a git repo to match git exactly, so that jrep and git agree on which files count.
 18. As a developer, I want `.gitignore` files honoured outside a git repo too, so that unversioned folders behave the same way.
 19. As a developer, I want `--no-ignore`, so that I can search ignored files on purpose.
+19a. As a coding agent, I want test files and test data skipped unless I pass `--tests`, so that the code under test isn't crowded out of the results.
 20. As a developer, I want binary files skipped silently, so that they never reach Jev.
 21. As a coding agent, I want files over `--max-filesize` (default 1 MB) skipped and listed on stderr, so that nothing is skipped without my knowing.
 22. As a coding agent, I want the skip message to say how to include those files (`--max-filesize 0`), so that I can rerun at once.
@@ -45,7 +46,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 24. As a coding agent, I want doc comments kept with the code they describe, so that the context Jev and I see is complete.
 25. As a coding agent, I want each result to carry the function or class header as its signature, so that I can judge relevance without opening the file.
 26. As a coding agent, I want files in languages without a grammar, or that fail to parse, still searched, so that coverage never depends on parser support.
-27. As a developer, I want chunks kept to roughly 50–300 lines and well inside Jev's 32K-token limit, so that requests are valid and answers stay accurate.
+27. As a developer, I want chunks kept to roughly 10–300 lines and well inside Jev's 32K-token limit, so that requests are valid, answers stay accurate and most results point at a single function.
 28. As a developer, I want `-s` to send only chunks containing the question's words, so that big repos cost less.
 29. As a developer, I want `--keywords 'a|b|c'` to set the `-s` keywords, so that I control what the pre-pass matches.
 30. As a developer, I want every chunk sent to Jev when `-s` is off, so that recall never silently depends on wording.
@@ -73,7 +74,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 - **Form:** one Go binary, CLI only. An MCP server and a daemon were explicitly rejected.
 - **Modules:** the CLI (flags, wiring, exit codes); walk (file listing, ignore rules, binary and size checks); chunk (splitting); prefilter (the `-s` pass); jev (API client, rate limiter, retries, behind a client interface); cache (behind a two-call `Get(keys)` / `Put(key, noul)` interface, so the store can be swapped in one place); search (key → cache → Jev → rank); output (text and JSON).
 - **Walking:** inside git, the file list comes from git (tracked plus untracked-but-not-ignored). Outside git, `.gitignore` files are parsed. A file is binary if its first 8 KB contain a NUL byte. `--max-filesize` takes sizes like `1M`, and `0` means no limit.
-- **Chunking:** uses the existing pure-Go tree-sitter port `gotreesitter` at a pinned version. Do not write a port. Split at top-level syntax nodes and open up oversized nodes into their children. Merge tiny pieces and split anything over ~300 lines. Estimate tokens as bytes ÷ 3 and keep chunks well inside 32K tokens. Fall back to a plain splitter (unindented lines after blank lines) when there is no grammar or parsing fails. Check the grammars' binary-size cost; if it is large, ship only common languages.
+- **Chunking:** uses the existing pure-Go tree-sitter port `gotreesitter` at a pinned version. Do not write a port. Split at top-level syntax nodes and open up oversized nodes into their children. Merge pieces under 10 lines and split anything over ~300 lines. Estimate tokens as bytes ÷ 2.75 and keep chunks well inside 32K tokens. Fall back to a plain splitter (unindented lines after blank lines) when there is no grammar or parsing fails. Check the grammars' binary-size cost; if it is large, ship only common languages.
 - **Jev request:** `POST /v1/systemone` with the pinned model, a state of `{path, lines, code}` and one Noul question per search question (`q0`, `q1`, …), all in a single request per chunk. Read `answers.qN.noul`. The question is phrased as a statement about the state's `code` field.
 - **Cache:** SQLite via a pure-Go driver. This was approved after comparison with bbolt, Badger, plain files and JSON. There is one database per repo in the user cache folder, named by a hash of the repo root (the git top-level, or the search path outside git). The table holds key, probability, model and last-used time. WAL mode, a busy timeout and insert-or-ignore handle concurrent processes. Cleanup runs daily and deletes rows unused for 30 days and rows from other model versions.
 - **Key:** sha256 over model + normalised question + state as sent. Normalising means lowercasing, collapsing white space and trimming.

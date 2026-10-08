@@ -14,51 +14,59 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/time/rate"
 )
 
 const DefaultBaseURL = "https://api.typesafe.ai"
 
-// HTTPOptions tune the real client. Zero values take the defaults below,
-// which follow TypeSafe's published limits; the limits can change without
-// notice, so they are settable.
+// HTTPOptions tune the real client. Zero values take the defaults below.
+//
+// TypeSafe publishes 80 requests/s and 100K tokens/s, but says its limits
+// change without notice; on 2026-10-08 a scan at 4x those ran with no 429s.
+// So the defaults are a ceiling of 4x, and the client backs off on its own
+// when TypeSafe throttles it (see limits).
 type HTTPOptions struct {
 	BaseURL           string        // default DefaultBaseURL
-	TokensPerSecond   float64       // default 100,000
-	RequestsPerSecond float64       // default 80
+	TokensPerSecond   float64       // ceiling; default 400,000
+	RequestsPerSecond float64       // ceiling; default 320
 	MaxRetries        int           // default 6
 	BaseBackoff       time.Duration // first retry delay, doubled each time; default 500 ms
 	MaxBackoff        time.Duration // default 10 s
 	Timeout           time.Duration // per attempt; default 60 s
 }
 
+// bytesPerToken is how many request bytes make one Jev token. Measured at
+// 2.83 on a Go repo's JSON payloads; rounding down overestimates tokens,
+// the safe side for a client-side limit.
+const bytesPerToken = 2.75
+
 // HTTP is the Jev client for TypeSafe's API. It is safe for concurrent use;
-// all callers share one rate limiter.
+// all callers share one adaptive rate limiter.
 type HTTP struct {
-	key      string
-	opts     HTTPOptions
-	http     *http.Client
-	requests *rate.Limiter
-	tokens   *rate.Limiter
+	key    string
+	opts   HTTPOptions
+	http   *http.Client
+	limits *limits
 }
 
 func NewHTTP(apiKey string, opts HTTPOptions) *HTTP {
 	opts.BaseURL = strings.TrimRight(cmp.Or(opts.BaseURL, DefaultBaseURL), "/")
-	opts.TokensPerSecond = cmp.Or(opts.TokensPerSecond, 100_000)
-	opts.RequestsPerSecond = cmp.Or(opts.RequestsPerSecond, 80)
+	opts.TokensPerSecond = cmp.Or(opts.TokensPerSecond, 400_000)
+	opts.RequestsPerSecond = cmp.Or(opts.RequestsPerSecond, 320)
 	opts.MaxRetries = cmp.Or(opts.MaxRetries, 6)
 	opts.BaseBackoff = cmp.Or(opts.BaseBackoff, 500*time.Millisecond)
 	opts.MaxBackoff = cmp.Or(opts.MaxBackoff, 10*time.Second)
 	opts.Timeout = cmp.Or(opts.Timeout, 60*time.Second)
-	// Small bursts: a fresh limiter must not send a full second's quota at once.
 	return &HTTP{
-		key:      apiKey,
-		opts:     opts,
-		http:     &http.Client{Timeout: opts.Timeout},
-		requests: rate.NewLimiter(rate.Limit(opts.RequestsPerSecond), max(1, int(math.Ceil(opts.RequestsPerSecond/10)))),
-		tokens:   rate.NewLimiter(rate.Limit(opts.TokensPerSecond), max(1, int(opts.TokensPerSecond/5))),
+		key:    apiKey,
+		opts:   opts,
+		http:   &http.Client{Timeout: opts.Timeout},
+		limits: newLimits(opts.RequestsPerSecond, opts.TokensPerSecond),
 	}
+}
+
+// Limits is the rate the client is currently allowing itself.
+func (c *HTTP) Limits() (requestsPerSecond, tokensPerSecond float64) {
+	return c.limits.current()
 }
 
 type question struct {
@@ -99,6 +107,12 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("TypeSafe API error %d: %s", e.status, e.body)
 }
 
+// throttled reports a rate limit (429) or overload (529) reply.
+func throttled(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && (se.status == http.StatusTooManyRequests || se.status == 529)
+}
+
 func retryable(err error) bool {
 	var se *statusError
 	if errors.As(err, &se) {
@@ -116,20 +130,19 @@ func (c *HTTP) Ask(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	// Jev counts tokens; bytes ÷ 3 overestimates them for code, which is
-	// the safe side for a client-side limit.
-	tokens := min(c.tokens.Burst(), len(payload)/3+1)
+	tokens := int(math.Ceil(float64(len(payload)) / bytesPerToken))
 
 	for attempt := 0; ; attempt++ {
-		if err := c.requests.Wait(ctx); err != nil {
-			return Response{}, err
-		}
-		if err := c.tokens.WaitN(ctx, tokens); err != nil {
+		if err := c.limits.wait(ctx, tokens); err != nil {
 			return Response{}, err
 		}
 		resp, err := c.post(ctx, payload, len(req.Questions))
 		if err == nil {
+			c.limits.succeeded()
 			return resp, nil
+		}
+		if throttled(err) {
+			c.limits.throttled()
 		}
 		if ctx.Err() != nil {
 			return Response{}, ctx.Err()

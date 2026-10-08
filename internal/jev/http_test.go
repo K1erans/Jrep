@@ -212,3 +212,86 @@ func TestRealAPISmoke(t *testing.T) {
 		t.Fatalf("unexpected answers %+v", resp)
 	}
 }
+
+func TestRequestsLargerThanTheBurstAreChargedInFull(t *testing.T) {
+	c, _ := server(t, func(w http.ResponseWriter, r *http.Request, _ int) { ok(w) })
+	big := req
+	big.State.Code = strings.Repeat("x", 3000) // ~1150 tokens at bytes ÷ 2.75
+	c = NewHTTP("k", HTTPOptions{BaseURL: c.opts.BaseURL, RequestsPerSecond: 1e6, TokensPerSecond: 3000})
+	start := time.Now()
+	for range 4 {
+		if _, err := c.Ask(context.Background(), big); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// ~4600 tokens at 3000/s with a 600-token burst is ~1.3 s. Capping each
+	// request at the burst would count only 2400 tokens and take ~0.6 s.
+	if d := time.Since(start); d < time.Second {
+		t.Fatalf("4 requests of ~1150 tokens at 3000 tokens/s took only %v", d)
+	}
+}
+
+func TestDefaultLimitsAreTheProbedCeiling(t *testing.T) {
+	rps, tps := NewHTTP("k", HTTPOptions{}).Limits()
+	if rps != 320 || tps != 400_000 {
+		t.Fatalf("got %v req/s, %v tok/s", rps, tps)
+	}
+}
+
+func TestThrottlingHalvesTheRateThenItRecovers(t *testing.T) {
+	var throttle atomic.Bool
+	c, _ := server(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+		if throttle.Load() {
+			throttle.Store(false)
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		ok(w)
+	})
+	c = NewHTTP("k", HTTPOptions{BaseURL: c.opts.BaseURL, RequestsPerSecond: 100, TokensPerSecond: 1e6, BaseBackoff: time.Millisecond})
+	now := time.Unix(1_000_000, 0)
+	c.limits.now = func() time.Time { return now }
+	ask := func() {
+		t.Helper()
+		if _, err := c.Ask(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rps := func() float64 { r, _ := c.Limits(); return r }
+
+	throttle.Store(true)
+	ask() // a 429, then a success
+	if got := rps(); got != 50 {
+		t.Fatalf("after a 429 the rate should halve to 50, got %v", got)
+	}
+
+	now = now.Add(500 * time.Millisecond)
+	throttle.Store(true)
+	ask()
+	if got := rps(); got != 50 {
+		t.Fatalf("429s within a second of a cut are one event, got %v", got)
+	}
+
+	now = now.Add(1100 * time.Millisecond)
+	ask()
+	if got := rps(); got != 60 {
+		t.Fatalf("a second without 429s should add 10%% of the ceiling, got %v", got)
+	}
+	for range 10 {
+		now = now.Add(1100 * time.Millisecond)
+		ask()
+	}
+	if got := rps(); got != 100 {
+		t.Fatalf("the rate recovers up to the ceiling and stops, got %v", got)
+	}
+
+	for range 10 {
+		now = now.Add(1100 * time.Millisecond)
+		throttle.Store(true)
+		ask()
+	}
+	if got := rps(); got != 100.0/16 {
+		t.Fatalf("the rate never drops below 1/16 of the ceiling, got %v", got)
+	}
+}

@@ -48,6 +48,7 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
 - `-s` sends only chunks containing the question's words (or
   `--keywords 'a|b'`): faster and cheaper on big repos, but misses code
   that uses other words.
+- Test files and test data are skipped; `--tests` includes them.
 - `--json` prints one object per match.
 - Files over 1 MB are skipped and listed on stderr; `--max-filesize 0`
   includes them.

@@ -16,6 +16,7 @@ jrep "retries failed payments" src/
 | Search | Every search asks Jev. There is no regex mode. |
 | Keyword pre-pass | Off by default, so every chunk goes to Jev. `-s` turns it on. |
 | Ignored files | `.gitignore` is followed by default. `--no-ignore` turns it off. |
+| Test files | Skipped by default (they crowd out the code they test). `--tests` includes them. |
 | Results | Line ranges with a probability, best first, short by default. |
 | Cache | SQLite (`modernc.org/sqlite`), one database per repo in the user cache folder. |
 | Model | Pinned version (`jev-1.13.0`), overridable with `--model`. |
@@ -32,6 +33,7 @@ jrep [flags] "question" [path...]
   --top 10               maximum results per question
   --json                 one JSON object per match
   --no-ignore            also search gitignored files
+  --tests                also search test files and test data
   --max-filesize 1M      skip larger files, listed on stderr (0 = no limit)
   --model jev-1.13.0     Jev model version
   --no-cache             don't read cached answers
@@ -74,7 +76,7 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 
 ```
 1. walk      list files, following .gitignore, skipping binaries
-2. chunk     split files into functions/blocks of ~50–300 lines
+2. chunk     split files into functions/blocks of ~10–300 lines
 3. pre-pass  only with -s: keep chunks matching the keywords
 4. key       sha256(model + question + chunk as sent) for every chunk
 5. cache     one batched lookup; hits are done
@@ -97,7 +99,7 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 - Split at real function, method, class and type boundaries from the syntax tree.
 - For languages without a grammar, or files that fail to parse, fall back to a plain-Go splitter: top-level declarations by indentation, then blank-line boundaries.
 - Merge tiny pieces, and split anything over ~300 lines.
-- Keep each chunk well inside Jev's limit of 32K tokens for state plus the longest question. Estimate tokens as bytes ÷ 3 to stay on the safe side.
+- Keep each chunk well inside Jev's limit of 32K tokens for state plus the longest question. Estimate tokens as bytes ÷ 2.75 to stay on the safe side (measured: 2.83 bytes per token on Go code sent as JSON).
 - Record each chunk's signature (the function or class header) for output.
 - `gotreesitter` is pre-1.0 and releases often: pin its version, and check how much the bundled grammars add to binary size. If it's large, include only the common languages.
 
@@ -123,7 +125,7 @@ Request: `POST https://api.typesafe.ai/v1/systemone`
 
 - One request per chunk. Every question (`q0`, `q1`, …) is answered in that one request, so the chunk is paid for once.
 - Read `answers.qN.noul` (0–1) from the response.
-- Rate limits: up to 100K tokens/s and 80 requests/s per the docs. Enforce both with a client-side limiter, and make them configurable because TypeSafe says they can change.
+- Rate limits: the docs say 100K tokens/s and 80 requests/s, but a scan at 4x that (320 req/s, 400K tok/s) ran on 2026-10-08 with no 429s. The client-side limiter uses 4x as its ceiling, halves on 429/529 (at most once a second), and adds back a tenth of the ceiling per quiet second. `JREP_MAX_RPS` / `JREP_MAX_TPS` set the ceiling.
 - On `429` or `529`, retry with exponential backoff and honour `retry-after`.
 
 ## Cache
@@ -192,7 +194,7 @@ internal/output/        text and JSON printing
 
 ## Open questions and risks
 
-- **Throughput:** at 100K tokens/s, a full scan of a 4M-token repo takes at least ~40 s. Small repos take seconds. Repeat searches are fast once cached.
+- **Throughput:** measured on miniflux (658 files): a full scan took 25.6 s at the documented limits and 8.3 s at 4x. Requests take ~235 ms (p90 ~300 ms) regardless of rate. Repeat searches are fast once cached.
 - **Rate limits** can change without notice.
 - **Latency** isn't measured yet. The claimed 70–500 ms per call needs checking.
 - **Chunk size vs accuracy:** TypeSafe notes accuracy shifts as the state grows. Tune after measuring.

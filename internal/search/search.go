@@ -15,9 +15,10 @@ import (
 	"jrep/internal/jev"
 )
 
-// DefaultWorkers is how many Jev calls may be in flight. The client's rate
+// DefaultWorkers is how many Jev calls may be in flight: enough for the
+// client's 320 requests/s ceiling at ~250 ms a call. The client's rate
 // limiter, not this number, keeps calls inside TypeSafe's limits.
-const DefaultWorkers = 64
+const DefaultWorkers = 128
 
 type Chunk struct {
 	Path string // shown to the user
