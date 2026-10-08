@@ -94,6 +94,7 @@ func TestParseArgsErrors(t *testing.T) {
 		"empty":     {"   "},
 		"unknown":   {"--frobnicate", "q"},
 		"keywords":  {"-s", "--keywords", "(", "q"},
+		"needs -s":  {"--keywords", "retry", "q"},
 	}
 	for name, args := range cases {
 		if _, err := parseArgs(args); err == nil {

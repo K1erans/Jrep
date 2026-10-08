@@ -200,3 +200,34 @@ func TestUnusableCacheWarnsButSearches(t *testing.T) {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 }
+
+func TestPrepassSendsOnlyChunksWithKeywords(t *testing.T) {
+	project(t, billing)
+	fake := scorer()
+	h := newHarness(fake)
+	if code := h.run("-s", "retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, h.errOut.String())
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 1 || reqs[0].State.Path != "src/billing/retry.go" {
+		t.Fatalf("only the chunk mentioning the keywords should be sent, got %d requests", len(reqs))
+	}
+
+	fake2 := scorer()
+	h = newHarness(fake2)
+	h.run("retries failed payments")
+	if len(fake2.Requests()) != 2 {
+		t.Fatal("without -s every chunk goes to Jev")
+	}
+}
+
+func TestPrepassThatKeepsNothingSaysWhy(t *testing.T) {
+	project(t, billing)
+	h := newHarness(scorer())
+	if code := h.run("-s", "--keywords", "kafka|rabbitmq", "retries failed payments"); code != exitNoMatch {
+		t.Fatalf("exit %d", code)
+	}
+	if want := "jrep: -s kept 0 of 2 chunks (keywords: kafka|rabbitmq)\n"; h.errOut.String() != want {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+}

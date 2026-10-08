@@ -15,6 +15,7 @@ import (
 	"jrep/internal/chunk"
 	"jrep/internal/jev"
 	"jrep/internal/output"
+	"jrep/internal/prefilter"
 	"jrep/internal/search"
 	"jrep/internal/walk"
 )
@@ -113,6 +114,22 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 	chunks, err := search.Load(files.Files, chunk.Default)
 	if err != nil {
 		return exitError, err
+	}
+	if cfg.Prepass {
+		f, err := prefilter.New(cfg.Keywords, cfg.Questions)
+		if err != nil {
+			return exitError, fmt.Errorf("-s: %w", err)
+		}
+		kept := chunks[:0:0]
+		for _, c := range chunks {
+			if f.Keep(c.Code) {
+				kept = append(kept, c)
+			}
+		}
+		if len(kept) == 0 {
+			fmt.Fprintf(a.stderr, "jrep: -s kept 0 of %d chunks (keywords: %s)\n", len(chunks), f.Pattern())
+		}
+		chunks = kept
 	}
 
 	// A broken cache costs money, not correctness: warn and carry on.

@@ -17,7 +17,7 @@ Prints matching line ranges, best first. Exit status: 0 match, 1 no match, 2 err
 
   -q "question"          extra question, repeatable; answered in the same Jev calls
   -s                     keyword pre-pass first, fewer chunks sent to Jev
-  --keywords 'a|b|c'     regex for the pre-pass (default: words from the question)
+  --keywords 'a|b|c'     regex for the -s pre-pass (default: words from the question)
   --threshold 0.6        minimum probability to count as a match
   --top 10               maximum results per question (0 = no limit)
   --json                 one JSON object per match
@@ -165,6 +165,10 @@ func parseArgs(args []string) (config, error) {
 		return cfg, fmt.Errorf("--top must be 0 or more, got %d", cfg.Top)
 	}
 	if cfg.Keywords != "" {
+		// Without -s every chunk goes to Jev; say so rather than filter.
+		if !cfg.Prepass {
+			return cfg, errors.New("--keywords only applies with -s")
+		}
 		if _, err := regexp.Compile("(?i)" + cfg.Keywords); err != nil {
 			return cfg, fmt.Errorf("--keywords: %w", err)
 		}
