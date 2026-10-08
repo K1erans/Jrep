@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -32,7 +33,7 @@ const maxListed = 10
 // app holds what main wires up for real and tests replace.
 type app struct {
 	stdout, stderr io.Writer
-	client         func(model string) jev.Client
+	client         func() (jev.Client, error)
 	openCache      func(root, model string) (cache.Cache, func() error, error)
 	clearCache     func(root string) error
 }
@@ -48,7 +49,21 @@ func realApp(stdout, stderr io.Writer) app {
 	return app{
 		stdout: stdout,
 		stderr: stderr,
-		client: func(string) jev.Client { return noKey{} },
+		client: func() (jev.Client, error) {
+			key := os.Getenv("TYPESAFE_API_KEY")
+			if key == "" {
+				return noKey{}, nil
+			}
+			opts := jev.HTTPOptions{BaseURL: os.Getenv("TYPESAFE_BASE_URL")}
+			var err error
+			if opts.RequestsPerSecond, err = envRate("JREP_MAX_RPS"); err != nil {
+				return nil, err
+			}
+			if opts.TokensPerSecond, err = envRate("JREP_MAX_TPS"); err != nil {
+				return nil, err
+			}
+			return jev.NewHTTP(key, opts), nil
+		},
 		openCache: func(root, model string) (cache.Cache, func() error, error) {
 			dir, err := cache.Dir()
 			if err != nil {
@@ -140,8 +155,12 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 	}
 	defer closeStore()
 
+	client, err := a.client()
+	if err != nil {
+		return exitError, err
+	}
 	warned := false
-	results, err := search.Run(ctx, chunks, a.client(cfg.Model), store, search.Options{
+	results, err := search.Run(ctx, chunks, client, store, search.Options{
 		Questions: cfg.Questions,
 		Model:     cfg.Model,
 		Threshold: cfg.Threshold,
@@ -194,6 +213,19 @@ func (a app) reportOversize(files []walk.File, limit int64) {
 	}
 	fmt.Fprintf(a.stderr, "jrep: skipped %d %s over %s: %s (use --max-filesize 0 to include)\n",
 		len(files), noun, formatSize(limit), strings.Join(names, ", "))
+}
+
+// envRate reads an optional positive rate limit override.
+func envRate(name string) (float64, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return 0, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		return 0, fmt.Errorf("%s must be a positive number, got %q", name, v)
+	}
+	return f, nil
 }
 
 func formatSize(n int64) string {

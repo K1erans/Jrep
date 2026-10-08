@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/odvcencio/gotreesitter v0.55.1
+	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.60.1
 )
 

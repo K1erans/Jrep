@@ -27,7 +27,12 @@ Prints matching line ranges, best first. Exit status: 0 match, 1 no match, 2 err
   --no-cache             don't read cached answers
   --clear-cache          delete this repo's cache and exit
 
-The API key is read from TYPESAFE_API_KEY.
+Environment:
+  TYPESAFE_API_KEY       API key (only needed when an answer isn't cached)
+  TYPESAFE_BASE_URL      API base URL (default https://api.typesafe.ai)
+  JREP_MAX_RPS           requests per second limit (default 80)
+  JREP_MAX_TPS           tokens per second limit (default 100000)
+  JREP_CACHE_DIR         cache folder (default: jrep in the user cache folder)
 `
 
 const defaultModel = "jev-1.13.0"

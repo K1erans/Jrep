@@ -3,10 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"jrep/internal/cache"
@@ -46,7 +51,7 @@ func newHarness(client jev.Client) *harness {
 	h.app = app{
 		stdout: &h.out,
 		stderr: &h.errOut,
-		client: func(string) jev.Client { return client },
+		client: func() (jev.Client, error) { return client, nil },
 		openCache: func(string, string) (cache.Cache, func() error, error) {
 			return h.store, func() error { return nil }, nil
 		},
@@ -229,5 +234,69 @@ func TestPrepassThatKeepsNothingSaysWhy(t *testing.T) {
 	}
 	if want := "jrep: -s kept 0 of 2 chunks (keywords: kafka|rabbitmq)\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
+	}
+}
+
+func TestNoAPIKeyOnlyFailsWhenJevIsNeeded(t *testing.T) {
+	project(t, billing)
+	t.Setenv("JREP_CACHE_DIR", t.TempDir())
+	t.Setenv("TYPESAFE_API_KEY", "")
+	h := newHarness(scorer())
+	disk := realApp(&h.out, &h.errOut)
+	h.openCache = disk.openCache
+
+	h.run("retries failed payments") // fills the cache through the fake
+	h.client = disk.client
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("a fully cached search needs no key; exit %d, %s", code, h.errOut.String())
+	}
+	if code := h.run("sends email"); code != exitError || !strings.Contains(h.errOut.String(), "TYPESAFE_API_KEY is not set") {
+		t.Fatalf("exit %d, stderr %q", code, h.errOut.String())
+	}
+}
+
+func TestBadRateOverrideIsAnError(t *testing.T) {
+	project(t, billing)
+	t.Setenv("TYPESAFE_API_KEY", "k")
+	t.Setenv("JREP_MAX_RPS", "fast")
+	h := newHarness(scorer())
+	h.client = realApp(&h.out, &h.errOut).client
+	if code := h.run("q"); code != exitError || !strings.Contains(h.errOut.String(), "JREP_MAX_RPS") {
+		t.Fatalf("exit %d, stderr %q", code, h.errOut.String())
+	}
+}
+
+// TestRealWiringAgainstAFakeServer runs the production client and SQLite
+// cache against a local stand-in for TypeSafe.
+func TestRealWiringAgainstAFakeServer(t *testing.T) {
+	project(t, billing)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body struct {
+			State struct{ Code string } `json:"state"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		noul := 0.1
+		if strings.Contains(body.State.Code, "charge") {
+			noul = 0.9
+		}
+		fmt.Fprintf(w, `{"model":"jev-1.13.0","answers":{"q0":{"type":"noul","noul":%v}}}`, noul)
+	}))
+	defer srv.Close()
+	t.Setenv("TYPESAFE_API_KEY", "k")
+	t.Setenv("TYPESAFE_BASE_URL", srv.URL)
+	t.Setenv("JREP_CACHE_DIR", t.TempDir())
+
+	var out, errOut bytes.Buffer
+	a := realApp(&out, &errOut)
+	if code := a.run(context.Background(), []string{"retries failed payments"}); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, errOut.String())
+	}
+	if want := "0.90  src/billing/retry.go:1-6  func RetryFailedPayment(id string) error\n"; out.String() != want {
+		t.Fatalf("got %q", out.String())
+	}
+	if code := a.run(context.Background(), []string{"retries failed payments"}); code != exitMatch || calls.Load() != 2 {
+		t.Fatalf("second run: exit %d, %d calls in total", code, calls.Load())
 	}
 }
