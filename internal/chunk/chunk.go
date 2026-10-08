@@ -23,9 +23,12 @@ type Options struct {
 	MaxBytes int // hard cap on a chunk's code, to stay inside Jev's token limit
 }
 
-// Default keeps chunks around 50–300 lines. 48 KB is ~16K tokens at the
-// conservative bytes ÷ 3 estimate, well inside Jev's 32K state limit.
-var Default = Options{MinLines: 50, MaxLines: 300, MaxBytes: 48 << 10}
+// Default gives most functions a chunk of their own, so results point at
+// one function rather than a run of them; only pieces under 10 lines merge.
+// Small chunks cost requests, not tokens: each Jev call is ~235 ms and the
+// client runs many in parallel. 48 KB is ~17.5K tokens at bytes ÷ 2.75,
+// well inside Jev's 32K state limit.
+var Default = Options{MinLines: 10, MaxLines: 300, MaxBytes: 48 << 10}
 
 const maxSignature = 100
 

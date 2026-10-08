@@ -209,3 +209,25 @@ func TestEmptyAndBlankFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultsGiveDozenLineFunctionsTheirOwnChunk(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("package p\n\n")
+	names := []string{"Alpha", "Beta", "Gamma", "Delta"}
+	for _, n := range names {
+		fmt.Fprintf(&b, "func %s() int {\n", n)
+		for i := 0; i < 10; i++ {
+			fmt.Fprintf(&b, "\tx%d := %d\n", i, i)
+		}
+		b.WriteString("\treturn 0\n}\n\n")
+	}
+	got := Split("p.go", []byte(b.String()), Default)
+	var sigs []string
+	for _, c := range got {
+		sigs = append(sigs, c.Signature)
+	}
+	want := []string{"func Alpha() int", "func Beta() int", "func Gamma() int", "func Delta() int"}
+	if fmt.Sprint(sigs) != fmt.Sprint(want) {
+		t.Fatalf("got %q, want %q", sigs, want)
+	}
+}
