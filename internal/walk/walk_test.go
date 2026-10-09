@@ -52,10 +52,10 @@ func rels(files []File) []string {
 func TestGitRepoFollowsGitignore(t *testing.T) {
 	dir := t.TempDir()
 	tree(t, dir, map[string]string{
-		".gitignore":         "node_modules/\n*.log\n",
+		".gitignore":         "build/\n*.log\n",
 		"src/app.go":         "package app\n",
 		"src/untracked.go":   "package app\n",
-		"node_modules/x.js":  "x\n",
+		"build/x.js":         "x\n",
 		"debug.log":          "log\n",
 		"src/sub/.gitignore": "secret.txt\n",
 		"src/sub/secret.txt": "s\n",
@@ -82,7 +82,7 @@ func TestGitRepoFollowsGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := paths(res.Files)
-	for _, p := range []string{"node_modules/x.js", "debug.log", "src/sub/secret.txt"} {
+	for _, p := range []string{"build/x.js", "debug.log", "src/sub/secret.txt"} {
 		if !contains(got, p) {
 			t.Errorf("--no-ignore should include %s, got %v", p, got)
 		}
@@ -118,38 +118,38 @@ func TestOutsideGitParsesGitignoreFiles(t *testing.T) {
 		".gitignore": strings.Join([]string{
 			"# build output",
 			"/dist",
-			"*.min.js",
-			"!keep.min.js",
+			"*.out.js",
+			"!keep.out.js",
 			"logs/",
 			"docs/**/draft.md",
 		}, "\n"),
-		"dist/app.js":          "x",
-		"lib/dist/real.js":     "x", // /dist is anchored to the root
-		"lib/a.min.js":         "x",
-		"lib/keep.min.js":      "x",
-		"lib/logs/today.txt":   "x",
-		"lib/logs.txt":         "x", // logs/ only matches directories
-		"docs/a/b/draft.md":    "x",
-		"docs/draft.md":        "x", // **/ also matches zero directories
-		"docs/final.md":        "x",
-		"pkg/.gitignore":       "*.gen.go\n",
-		"pkg/model.gen.go":     "x",
-		"pkg/model.go":         "x",
-		"other/model.gen.go":   "x", // nested rules apply only below their folder
-		".git-not-a-repo.txt":  "x",
-		"node_modules/dep.js":  "x",
-		"node_modules/.hidden": "x",
+		"dist/app.js":         "x",
+		"lib/dist/real.js":    "x", // /dist is anchored to the root
+		"lib/a.out.js":        "x",
+		"lib/keep.out.js":     "x",
+		"lib/logs/today.txt":  "x",
+		"lib/logs.txt":        "x", // logs/ only matches directories
+		"docs/a/b/draft.md":   "x",
+		"docs/draft.md":       "x", // **/ also matches zero directories
+		"docs/final.md":       "x",
+		"pkg/.gitignore":      "*.gen.go\n",
+		"pkg/model.gen.go":    "x",
+		"pkg/model.go":        "x",
+		"other/model.gen.go":  "x", // nested rules apply only below their folder
+		".git-not-a-repo.txt": "x",
+		"deps/dep.js":         "x",
+		"deps/.hidden":        "x",
 	})
 	t.Chdir(dir)
 
-	res, err := Walk([]string{"."}, Options{})
+	res, err := Walk([]string{"."}, Options{Docs: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		".git-not-a-repo.txt", ".gitignore", "docs/final.md", "lib/dist/real.js",
-		"lib/keep.min.js", "lib/logs.txt", "node_modules/.hidden", "node_modules/dep.js",
-		"other/model.gen.go", "pkg/.gitignore", "pkg/model.go",
+		".git-not-a-repo.txt", ".gitignore", "deps/.hidden", "deps/dep.js", "docs/final.md",
+		"lib/dist/real.js", "lib/keep.out.js", "lib/logs.txt", "other/model.gen.go",
+		"pkg/.gitignore", "pkg/model.go",
 	}
 	if got := paths(res.Files); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v\nwant %v", got, want)
@@ -228,7 +228,7 @@ func TestTestFilesAreSkippedUnlessAsked(t *testing.T) {
 		"web/__tests__/a.js": "x\n",
 		"py/test_parse.py":   "x\n",
 		"py/conftest.py":     "x\n",
-		"latest/notes.md":    "x\n", // "test" inside a word isn't a test folder
+		"latest/notes.txt":   "x\n", // "test" inside a word isn't a test folder
 		"contest.go":         "package feed\n",
 	})
 	t.Chdir(dir)
@@ -237,7 +237,7 @@ func TestTestFilesAreSkippedUnlessAsked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"contest.go", "feed.go", "latest/notes.md", "web/app.ts"}) {
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"contest.go", "feed.go", "latest/notes.txt", "web/app.ts"}) {
 		t.Fatalf("files %v", got)
 	}
 	if res.Tests != 6 {
@@ -303,5 +303,115 @@ func TestIsTest(t *testing.T) {
 		if got := IsTest(path); got != want {
 			t.Errorf("IsTest(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+func TestGeneratedFilesAreSkippedUnlessNamed(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{
+		"app.js":                     "x\n",
+		"package-lock.json":          "{}\n",
+		"web/pnpm-lock.yaml":         "x\n",
+		"yarn.lock":                  "x\n",
+		"go.sum":                     "x\n",
+		"Cargo.lock":                 "x\n",
+		"dist/app.js.map":            "{}\n",
+		"vendor/jquery.min.js":       "x\n",
+		"logo.svg":                   "<svg/>\n",
+		"node_modules/dep/a.js":      "x\n",
+		"web/node_modules/b.js":      "x\n",
+		"node_modules/dep/test/a.js": "x\n", // generated, not a test: --tests wouldn't bring it back
+		"ICON.SVG":                   "<svg/>\n",
+		"src/sitemap.go":             "package src\n", // .map only as a suffix of a source map
+		"src/lockfile.go":            "package src\n",
+		"src/admin.js":               "x\n",
+		"src/node_modules_doc.go":    "package src\n",
+	})
+	t.Chdir(dir)
+
+	res, err := Walk([]string{"."}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"app.js", "src/admin.js", "src/lockfile.go", "src/node_modules_doc.go", "src/sitemap.go"}
+	if got := paths(res.Files); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v\nwant %v", got, want)
+	}
+	if res.Generated != 12 || res.Tests != 0 {
+		t.Fatalf("want 12 generated files and no tests counted as skipped, got %d and %d", res.Generated, res.Tests)
+	}
+
+	res, _ = Walk([]string{"package-lock.json", "node_modules/dep"}, Options{Tests: true})
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"node_modules/dep/a.js", "node_modules/dep/test/a.js", "package-lock.json"}) {
+		t.Fatalf("generated files named on the command line are searched: %v", got)
+	}
+}
+
+func TestDocsAreSkippedUnlessAsked(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{
+		"main.go":            "package main\n",
+		"README.md":          "x\n",
+		"docs/guide.mdx":     "x\n",
+		"docs/api.rst":       "x\n",
+		"CHANGELOG.markdown": "x\n",
+		"requirements.txt":   "x\n",
+	})
+	t.Chdir(dir)
+
+	res, err := Walk([]string{"."}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"main.go", "requirements.txt"}) {
+		t.Fatalf("files %v", got)
+	}
+	if res.Docs != 4 {
+		t.Fatalf("want 4 docs counted as skipped, got %d", res.Docs)
+	}
+
+	res, _ = Walk([]string{"."}, Options{Docs: true})
+	if len(res.Files) != 6 || res.Docs != 0 {
+		t.Fatalf("Docs should include all 6 files, got %v (skipped %d)", paths(res.Files), res.Docs)
+	}
+
+	res, _ = Walk([]string{"README.md"}, Options{})
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"README.md"}) {
+		t.Fatalf("a doc named on the command line is searched: %v", got)
+	}
+}
+
+func TestWorktreesShareTheMainCheckoutAsRepo(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main")
+	tree(t, main, map[string]string{"src/app.go": "package app\n"})
+	git(t, main, "init", "-q")
+	git(t, main, "add", ".")
+	git(t, main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+	git(t, main, "worktree", "add", "-q", filepath.Join(dir, "wt"))
+	main, _ = filepath.EvalSymlinks(main)
+	wt, _ := filepath.EvalSymlinks(filepath.Join(dir, "wt"))
+
+	for _, c := range []struct{ in, root string }{{main, main}, {filepath.Join(wt, "src"), wt}} {
+		res, err := Walk([]string{c.in}, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Root != c.root || res.Repo != main {
+			t.Errorf("walking %s: root %q repo %q, want root %q repo %q", c.in, res.Root, res.Repo, c.root, main)
+		}
+		if got := rels(res.Files); !reflect.DeepEqual(got, []string{"src/app.go"}) {
+			t.Errorf("walking %s: paths are relative to the worktree, got %v", c.in, got)
+		}
+		if repo, _ := Repo(c.in); repo != main {
+			t.Errorf("Repo(%s) = %q, want %q", c.in, repo, main)
+		}
+	}
+
+	plain := t.TempDir()
+	tree(t, plain, map[string]string{"a.go": "package a\n"})
+	res, _ := Walk([]string{plain}, Options{})
+	if res.Repo != res.Root {
+		t.Errorf("outside git the repo is the root: %q vs %q", res.Repo, res.Root)
 	}
 }

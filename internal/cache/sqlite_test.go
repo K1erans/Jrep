@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -157,6 +158,8 @@ func TestSeveralProcessesShareOneDatabase(t *testing.T) {
 	for p := range procs {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperWriter$", "-test.count=1")
 		cmd.Env = append(os.Environ(), "JREP_CACHE_HELPER_DB="+path, fmt.Sprintf("JREP_CACHE_HELPER_ID=%d", p+1))
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -164,7 +167,7 @@ func TestSeveralProcessesShareOneDatabase(t *testing.T) {
 	}
 	for p, cmd := range cmds {
 		if err := cmd.Wait(); err != nil {
-			t.Fatalf("process %d: %v", p+1, err)
+			t.Fatalf("process %d: %v\n%s", p+1, err, cmd.Stdout)
 		}
 	}
 
@@ -185,5 +188,42 @@ func TestSeveralProcessesShareOneDatabase(t *testing.T) {
 	}
 	if len(got) != len(keys) {
 		t.Fatalf("want %d answers, got %d", len(keys), len(got))
+	}
+}
+
+func TestChunkLayoutsPersistAndAgeOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repo.db")
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) { now = func() time.Time { return t0.Add(d) } }
+	defer func() { now = time.Now }()
+	day := 24 * time.Hour
+
+	at(0)
+	c := open(t, path, "m")
+	if err := c.PutChunks(map[Key][]byte{key(1): []byte("one"), key(2): []byte("two")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutChunks(map[Key][]byte{key(1): []byte("other")}); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+
+	at(20 * day)
+	c = open(t, path, "other-model") // layouts don't depend on the model
+	got, err := c.GetChunks([]Key{key(1), key(3)})
+	c.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || string(got[key(1)]) != "one" {
+		t.Fatalf("got %q", got)
+	}
+
+	at(31 * day)
+	c = open(t, path, "m")
+	defer c.Close()
+	got, _ = c.GetChunks([]Key{key(1), key(2)})
+	if len(got) != 1 || got[key(2)] != nil {
+		t.Fatalf("after 31 days only the layout used on day 20 should be left, got %q", got)
 	}
 }

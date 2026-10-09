@@ -86,8 +86,8 @@ func TestAllQuestionsShareOneRequestPerChunk(t *testing.T) {
 		if len(r.Questions) != 2 || r.Model != "jev-1.13.0" {
 			t.Fatalf("request %+v", r)
 		}
-		if r.State.Path == "app/src/retry.ts" && (r.State.Lines != "12-80" || r.State.Code != "retry payment") {
-			t.Fatalf("state should carry the repo path, line range and code: %+v", r.State)
+		if r.State.Path == "app/src/retry.ts" && r.State.Code != "retry payment" {
+			t.Fatalf("state should carry the repo path and code: %+v", r.State)
 		}
 	}
 	if res[1].Question != "sends email" || len(res[1].Matches) != 1 || res[1].Matches[0].Path != "src/worker.ts" {
@@ -181,5 +181,28 @@ func TestDuplicateQuestionsAreAskedOnce(t *testing.T) {
 	}
 	if len(res) != 1 || len(fake.Requests()[0].Questions) != 1 {
 		t.Fatalf("got %d results, %d questions", len(res), len(fake.Requests()[0].Questions))
+	}
+}
+
+func TestAnswersSurviveCodeMovingWithinItsFile(t *testing.T) {
+	store := cache.NewMemory()
+	if _, err := Run(context.Background(), chunks(), &jevtest.Fake{Score: scores(paymentScores)}, store, opts("retries failed payments")); err != nil {
+		t.Fatal(err)
+	}
+	moved := chunks()
+	for i := range moved {
+		moved[i].Start += 7 // lines added above every chunk
+		moved[i].End += 7
+	}
+	again := &jevtest.Fake{Score: scores(paymentScores)}
+	res, err := Run(context.Background(), moved, again, store, opts("retries failed payments"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(again.Requests()); n != 0 {
+		t.Fatalf("unchanged code that only moved should come from the cache, made %d calls", n)
+	}
+	if m := res[0].Matches[0]; m.Start != 19 || m.End != 87 {
+		t.Fatalf("results show the new lines, got %d-%d", m.Start, m.End)
 	}
 }

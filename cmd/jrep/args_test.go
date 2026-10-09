@@ -28,7 +28,7 @@ func TestParseArgsFlagsAfterPositionals(t *testing.T) {
 	cfg, err := parseArgs([]string{
 		"retries failed payments", "src/", "-s", "--threshold", "0.8",
 		"-q", "sends email", "lib/", "-q", "logs errors", "--json",
-		"--top", "3", "--max-filesize", "2M", "--no-ignore", "--tests", "--no-cache",
+		"--top", "3", "--max-filesize", "2M", "--no-ignore", "--tests", "--docs", "--no-cache",
 		"--keywords", "retry|backoff", "--model", "jev-latest",
 	})
 	if err != nil {
@@ -44,6 +44,7 @@ func TestParseArgsFlagsAfterPositionals(t *testing.T) {
 		JSON:        true,
 		NoIgnore:    true,
 		Tests:       true,
+		Docs:        true,
 		MaxFileSize: 2 << 20,
 		Model:       "jev-latest",
 		NoCache:     true,

@@ -17,8 +17,10 @@ jrep "retries failed payments" src/
 | Keyword pre-pass | Off by default, so every chunk goes to Jev. `-s` turns it on. |
 | Ignored files | `.gitignore` is followed by default. `--no-ignore` turns it off. |
 | Test files | Skipped by default (they crowd out the code they test). `--tests` includes them. |
+| Docs | Markdown, reStructuredText and AsciiDoc skipped by default, for the same reason. `--docs` includes them. |
+| Generated files | Lockfiles, source maps, minified bundles, SVGs and `node_modules` are always skipped unless named. |
 | Results | Line ranges with a probability, best first, short by default. |
-| Cache | SQLite (`modernc.org/sqlite`), one database per repo in the user cache folder. |
+| Cache | SQLite (`modernc.org/sqlite`), one database per repository (shared by its worktrees) in the user cache folder. |
 | Model | Pinned version (`jev-1.13.0`), overridable with `--model`. |
 
 ## Interface
@@ -34,6 +36,7 @@ jrep [flags] "question" [path...]
   --json                 one JSON object per match
   --no-ignore            also search gitignored files
   --tests                also search test files and test data
+  --docs                 also search documentation
   --max-filesize 1M      skip larger files, listed on stderr (0 = no limit)
   --model jev-1.13.0     Jev model version
   --no-cache             don't read cached answers
@@ -76,7 +79,7 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 
 ```
 1. walk      list files, following .gitignore, skipping binaries
-2. chunk     split files into functions/blocks of ~10–300 lines
+2. chunk     split files into functions/blocks of ~10–300 lines, reusing cached layouts
 3. pre-pass  only with -s: keep chunks matching the keywords
 4. key       sha256(model + question + chunk as sent) for every chunk
 5. cache     one batched lookup; hits are done
@@ -89,7 +92,8 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 
 - Inside a git repo, use `git ls-files --cached --others --exclude-standard`, so ignore rules match git exactly.
 - Outside a repo, walk the folder and parse `.gitignore` files directly.
-- Skip binary files (a NUL byte in the first 8 KB).
+- Skip binary files (a NUL byte in the first 8 KB). Files are opened in parallel to check.
+- Skip generated files: lockfiles, source maps, minified bundles, SVGs and anything in `node_modules` (often missing from `.gitignore`). In one project a lockfile was 70% of the tokens a scan would send. Skip docs unless `--docs`: they describe behaviour too and crowd out code, and were 11% of one large repo's tokens. Like tests, both are counted on stderr, and naming a file or folder searches it.
 - Skip files over `--max-filesize` (default 1 MB, `0` = no limit). Files that size are almost always generated: bundles, minified JS, lockfiles, data dumps. One 1 MB file is ~330K tokens, about 3 s of the token rate limit, and its matches are mostly noise.
 - Never skip silently: list skipped files on stderr (`skipped 2 files over 1 MB: dist/app.js, …`) so the agent knows and can rerun with `--max-filesize 0`.
 
@@ -98,7 +102,9 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 - Parse with tree-sitter using [`gotreesitter`](https://github.com/odvcencio/gotreesitter), an existing pure-Go port of the tree-sitter runtime. It needs no cgo or C compiler and loads the standard grammars.
 - Split at real function, method, class and type boundaries from the syntax tree.
 - For languages without a grammar, or files that fail to parse, fall back to a plain-Go splitter: top-level declarations by indentation, then blank-line boundaries.
-- Merge tiny pieces, and split anything over ~300 lines.
+- Give up on a parse after 250 ms and use the fallback. A few files take seconds (one 44 KB Swift file took 9.7 s) and usually end in a syntax error anyway; on a 17.5K-file repo this halved chunking time.
+- Merge tiny pieces, and split anything over ~300 lines. Imports, package lines and comments always join the piece after them: on their own they cost a request and never match.
+- Cache each file's layout (line ranges, byte offsets, signatures) keyed by its content, name and the splitter's version, so a repeat search parses only changed files. On that repo a fully cached search went from 15.9 s to 1.1 s.
 - Keep each chunk well inside Jev's limit of 32K tokens for state plus the longest question. Estimate tokens as bytes ÷ 2.75 to stay on the safe side (measured: ~2.96 bytes per token on Go code sent as JSON). Every request also costs a fixed ~290 tokens, so very small chunks are mostly overhead.
 - Record each chunk's signature (the function or class header) for output.
 - `gotreesitter` is pre-1.0 and releases often: pin its version, and check how much the bundled grammars add to binary size. If it's large, include only the common languages.
@@ -116,7 +122,7 @@ Request: `POST https://api.typesafe.ai/v1/systemone`
 ```json
 {
   "model": "jev-1.13.0",
-  "state": { "path": "src/billing/retry.ts", "lines": "12-80", "code": "..." },
+  "state": { "path": "src/billing/retry.ts", "code": "..." },
   "questions": {
     "q0": { "type": "noul", "instructions": "The `code` retries failed payments" }
   }
@@ -124,6 +130,8 @@ Request: `POST https://api.typesafe.ai/v1/systemone`
 ```
 
 - One request per chunk. Every question (`q0`, `q1`, …) is answered in that one request, so the chunk is paid for once.
+- The state has no line numbers. They say nothing about what the code does, and as part of the key they would make an edit near the top of a file re-ask every chunk below it.
+- Scans are bound by the request rate, not tokens (a 92K-chunk scan is ~290 s of requests but ~165 s of tokens), and each request carries ~300 fixed tokens, so every chunk not sent saves both time and money.
 - Read `answers.qN.noul` (0–1) from the response.
 - Rate limits: the docs say 100K tokens/s and 80 requests/s, but a scan at 4x that (320 req/s, 400K tok/s) ran on 2026-10-08 with no 429s. The client-side limiter uses 4x as its ceiling, halves on 429/529 (at most once a second), and adds back a tenth of the ceiling per quiet second. `JREP_MAX_RPS` / `JREP_MAX_TPS` set the ceiling.
 - On `429` or `529`, retry with exponential backoff and honour `retry-after`.
@@ -137,16 +145,22 @@ CREATE TABLE answers (
   model      TEXT NOT NULL,      -- e.g. "jev-1.13.0"
   last_used  INTEGER NOT NULL    -- unix time
 );
+
+CREATE TABLE chunks (
+  key        BLOB PRIMARY KEY,   -- sha256(splitter version + options + file name + content)
+  layout     BLOB NOT NULL,      -- each chunk's lines, byte offset, length and signature
+  last_used  INTEGER NOT NULL
+);
 ```
 
-- **Location:** `<user cache dir>/jrep/<sha256 of repo root>.db`. On macOS that's `~/Library/Caches/jrep/`. The repo root is the git top-level folder, or the search path outside git.
-- **Key rule:** hash exactly what is sent to Jev. An edited chunk, renamed file, different question or new model version makes a new key, so stale answers can't come back.
+- **Location:** `<user cache dir>/jrep/<sha256 of repo>.db`. On macOS that's `~/Library/Caches/jrep/`. The repo is the main checkout's folder, so every worktree of a repository shares one database (keys use repo-relative paths, so that's safe); outside git it is the search path.
+- **Key rule:** hash exactly what is sent to Jev. An edited chunk, renamed file, different question or new model version makes a new key, so stale answers can't come back. Code that only moved within its file keeps its key.
 - **Question normalisation:** lowercase, collapse whitespace and trim before hashing.
 - **Store the probability,** so changing `--threshold` needs no new Jev calls.
-- **Several processes at once:** WAL mode, a busy timeout and `INSERT OR IGNORE`.
+- **Several processes at once:** WAL mode, a busy timeout and `INSERT OR IGNORE`. Switching a new file to WAL fails at once, without the busy timeout, while another process holds it, so opening retries.
 - **Interrupted runs:** answers are saved as they arrive, so a killed run keeps its progress.
-- **Cleanup:** at most once a day, delete rows unused for 30 days and rows from other model versions.
-- **Interface:** `Get(keys) map[key]noul` and `Put(key, noul)`, so SQLite can be swapped out in one file.
+- **Cleanup:** at most once a day, delete rows unused for 30 days and answers from other model versions.
+- **Interface:** `Get(keys) map[key]noul`, `Put(key, noul)`, plus `GetChunks(keys)` and a batched `PutChunks(layouts)` for chunk layouts, so SQLite can be swapped out in one file.
 
 ### Why SQLite
 

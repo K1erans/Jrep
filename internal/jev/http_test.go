@@ -16,7 +16,7 @@ import (
 
 var req = Request{
 	Model: "jev-1.13.0",
-	State: State{Path: "src/retry.ts", Lines: "12-80", Code: "retry()"},
+	State: State{Path: "src/retry.ts", Code: "retry()"},
 	Questions: []string{
 		Instruction("retries failed payments"),
 		Instruction("sends email"),
@@ -51,7 +51,7 @@ func TestSendsTheDocumentedRequestAndReadsAnswersInOrder(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&body)
 		want := map[string]any{
 			"model": "jev-1.13.0",
-			"state": map[string]any{"path": "src/retry.ts", "lines": "12-80", "code": "retry()"},
+			"state": map[string]any{"path": "src/retry.ts", "code": "retry()"},
 			"questions": map[string]any{
 				"q0": map[string]any{"type": "noul", "instructions": "The `code` retries failed payments"},
 				"q1": map[string]any{"type": "noul", "instructions": "The `code` sends email"},
@@ -194,7 +194,7 @@ func TestRealAPISmoke(t *testing.T) {
 	c := NewHTTP(key, HTTPOptions{BaseURL: os.Getenv("TYPESAFE_BASE_URL")})
 	resp, err := c.Ask(context.Background(), Request{
 		Model: "jev-1.13.0",
-		State: State{Path: "billing/retry.go", Lines: "1-9", Code: `func RetryFailedPayment(inv Invoice) error {
+		State: State{Path: "billing/retry.go", Code: `func RetryFailedPayment(inv Invoice) error {
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err := charge(inv); err == nil {
 			return nil

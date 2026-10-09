@@ -74,7 +74,7 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 	states := make([]jev.State, len(chunks))
 	var all []cache.Key
 	for c, ch := range chunks {
-		states[c] = jev.State{Path: ch.Rel, Lines: fmt.Sprintf("%d-%d", ch.Start, ch.End), Code: ch.Code}
+		states[c] = jev.State{Path: ch.Rel, Code: ch.Code}
 		sent, err := json.Marshal(states[c])
 		if err != nil {
 			return nil, err
@@ -114,12 +114,13 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 		for _, q := range t.missing {
 			req.Questions = append(req.Questions, instructions[q])
 		}
+		ch := chunks[t.chunk]
 		resp, err := client.Ask(ctx, req)
 		if err != nil {
-			return fmt.Errorf("%s:%s: %w", chunks[t.chunk].Path, t.state.Lines, err)
+			return fmt.Errorf("%s:%d-%d: %w", ch.Path, ch.Start, ch.End, err)
 		}
 		if len(resp.Nouls) != len(t.missing) {
-			return fmt.Errorf("%s:%s: got %d answers for %d questions", chunks[t.chunk].Path, t.state.Lines, len(resp.Nouls), len(t.missing))
+			return fmt.Errorf("%s:%d-%d: got %d answers for %d questions", ch.Path, ch.Start, ch.End, len(resp.Nouls), len(t.missing))
 		}
 		for i, q := range t.missing {
 			scores[t.chunk][q] = resp.Nouls[i]

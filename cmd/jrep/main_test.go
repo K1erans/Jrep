@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -333,5 +334,77 @@ func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
 	}
 	if want := "jrep: 1 test file not searched (use --tests to include)\n"; h.errOut.String() != want {
 		t.Fatalf("skipped tests are reported even when something matched; stderr %q", h.errOut.String())
+	}
+}
+
+func TestDocsAndGeneratedFilesAreLeftOutAndReported(t *testing.T) {
+	files := map[string]string{
+		"README.md":         "# Billing\n\nWe charge cards and retry.\n",
+		"package-lock.json": "{\"charge\": 1}\n",
+	}
+	for k, v := range billing {
+		files[k] = v
+	}
+	project(t, files)
+	fake := scorer()
+	h := newHarness(fake)
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, h.errOut.String())
+	}
+	for _, r := range fake.Requests() {
+		if r.State.Path == "README.md" || r.State.Path == "package-lock.json" {
+			t.Fatalf("%s isn't sent by default", r.State.Path)
+		}
+	}
+	want := "jrep: 1 generated file not searched (lockfiles, source maps, minified, SVG, node_modules; name it to include)\n" +
+		"jrep: 1 doc not searched (use --docs to include)\n"
+	if h.errOut.String() != want {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+
+	if code := h.run("--docs", "retries failed payments"); code != exitMatch {
+		t.Fatalf("--docs: exit %d", code)
+	}
+	if !strings.Contains(h.out.String(), "README.md:1-3") {
+		t.Fatalf("--docs should search README.md: %q", h.out.String())
+	}
+}
+
+func TestWorktreesShareTheCache(t *testing.T) {
+	project(t, billing)
+	mainDir, _ := os.Getwd()
+	wt := filepath.Join(t.TempDir(), "wt")
+	for _, args := range [][]string{
+		{"init", "-q"}, {"add", "."},
+		{"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"},
+		{"worktree", "add", "-q", wt},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	t.Setenv("JREP_CACHE_DIR", t.TempDir())
+	fake := scorer()
+	h := newHarness(fake)
+	disk := realApp(&h.out, &h.errOut)
+	h.openCache, h.clearCache = disk.openCache, disk.clearCache
+
+	h.run("retries failed payments")
+	calls := len(fake.Requests())
+	t.Chdir(wt)
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, h.errOut.String())
+	}
+	if len(fake.Requests()) != calls {
+		t.Fatalf("a worktree should reuse the main checkout's answers, made %d new calls", len(fake.Requests())-calls)
+	}
+
+	h.run("--clear-cache")
+	t.Chdir(mainDir)
+	h.run("retries failed payments")
+	if len(fake.Requests()) != 2*calls {
+		t.Fatal("--clear-cache in a worktree clears the shared cache")
 	}
 }

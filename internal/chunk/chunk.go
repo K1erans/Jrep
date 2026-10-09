@@ -3,24 +3,30 @@
 package chunk
 
 import (
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	gotreesitter "github.com/odvcencio/gotreesitter"
-	"github.com/odvcencio/gotreesitter/grammars"
 )
 
 type Chunk struct {
 	Start, End int    // 1-based, inclusive
 	Signature  string // header of the first definition, e.g. "func Retry(n int) error"
 	Code       string
+	Offset     int // Code's byte offset in the source
 }
 
 type Options struct {
 	MinLines int // pieces shorter than this merge with their neighbours
 	MaxLines int // pieces longer than this are split
 	MaxBytes int // hard cap on a chunk's code, to stay inside Jev's token limit
+
+	// ParseTimeout gives up on tree-sitter for a file and uses the plain
+	// splitter instead; 0 means no limit.
+	ParseTimeout time.Duration
 }
 
 // Default gives most functions a chunk of their own, so results point at
@@ -29,7 +35,16 @@ type Options struct {
 // many in parallel) and carries a fixed ~300-token overhead, so going much
 // smaller mostly buys overhead. 48 KB is ~17.5K tokens at bytes ÷ 2.75,
 // well inside Jev's 32K state limit.
-var Default = Options{MinLines: 10, MaxLines: 300, MaxBytes: 48 << 10}
+//
+// Nearly every file parses in a few milliseconds, but a handful take
+// seconds (one 44 KB Swift file took 9.7 s) and usually end in a syntax
+// error anyway. On a 17.5K-file repo, 250 ms cut chunking from 14.8 s to
+// 6.9 s and sent 24 files to the plain splitter.
+var Default = Options{MinLines: 10, MaxLines: 300, MaxBytes: 48 << 10, ParseTimeout: 250 * time.Millisecond}
+
+// Version names how Split cuts files. Bump it whenever the same file could
+// split differently, so chunk layouts cached by search.Load aren't reused.
+const Version = 1
 
 const maxSignature = 100
 
@@ -55,24 +70,38 @@ func (p piece) segment() bool { return p.hi > 0 }
 // Split cuts src into chunks. filename picks the tree-sitter grammar; files
 // without one, or that fail to parse, use a plain indentation splitter.
 func Split(filename string, src []byte, opts Options) []Chunk {
-	lines := strings.Split(string(src), "\n")
+	cs, _ := SplitStable(filename, src, opts)
+	return cs
+}
+
+// SplitStable is Split, also reporting whether the same input always
+// splits the same way. It doesn't when the parse ran out of time, which a
+// less busy machine might avoid, so such a split shouldn't be cached.
+func SplitStable(filename string, src []byte, opts Options) (chunks []Chunk, stable bool) {
+	text := string(src)
+	lines := strings.Split(text, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 	if len(lines) == 0 {
-		return nil
+		return nil, true
 	}
-	s := splitter{lines: lines, opts: opts}
-	pieces, ok := s.treePieces(filename, src)
+	s := splitter{text: text, lines: lines, starts: make([]int, len(lines)), opts: opts}
+	for r := 1; r < len(lines); r++ {
+		s.starts[r] = s.starts[r-1] + len(lines[r-1]) + 1
+	}
+	pieces, ok, stopped := s.treePieces(filename, src)
 	if !ok {
 		pieces = s.fallbackPieces()
 	}
-	return s.emit(s.merge(s.limit(pieces)))
+	return s.emit(s.merge(s.limit(pieces))), !stopped
 }
 
 type splitter struct {
-	lines []string
-	opts  Options
+	text   string
+	lines  []string // of text
+	starts []int    // byte offset of each line in the source
+	opts   Options
 }
 
 func (s splitter) rowBytes(start, end int) int {
@@ -95,23 +124,17 @@ type candidate struct {
 	comment bool
 }
 
-func (s splitter) treePieces(filename string, src []byte) ([]piece, bool) {
-	if grammars.DetectLanguage(filename) == nil {
-		return nil, false
-	}
-	bt, err := grammars.ParseFilePooledStrict(filename, src)
-	if err != nil {
-		return nil, false
+// treePieces splits at syntax nodes. stopped reports a parse that ran out
+// of time.
+func (s splitter) treePieces(filename string, src []byte) (pieces []piece, ok, stopped bool) {
+	bt, ok, stopped := parse(filename, src, s.opts.ParseTimeout)
+	if !ok {
+		return nil, false, stopped
 	}
 	defer bt.Release()
-	root := bt.RootNode()
-	if root == nil || root.HasError() {
-		return nil, false
-	}
-	cands := s.candidates(bt, root, "")
+	cands := s.candidates(bt, bt.RootNode(), "")
 	cands = attachComments(cands)
 
-	var pieces []piece
 	for i, c := range cands {
 		start := c.row
 		if i == 0 {
@@ -123,7 +146,7 @@ func (s splitter) treePieces(filename string, src []byte) ([]piece, bool) {
 		}
 		pieces = append(pieces, piece{start: start, end: end, sig: c.sig, rank: c.rank})
 	}
-	return pieces, len(pieces) > 0
+	return pieces, len(pieces) > 0, false
 }
 
 // candidates lists where pieces may start inside node. Children too big to
@@ -343,12 +366,16 @@ func (s splitter) segments(p piece, row int) []piece {
 }
 
 // merge joins short neighbouring pieces while the result stays in limits.
+// A run of imports, package lines and comments always joins what follows
+// it: on its own it would cost a Jev request and never match a question.
 func (s splitter) merge(pieces []piece) [][]piece {
 	var groups [][]piece
 	fits := func(g []piece, p piece) bool {
 		return !g[0].segment() && !p.segment() && !s.tooBig(g[0].start, p.end)
 	}
-	short := func(g []piece) bool { return g[len(g)-1].end-g[0].start+1 < s.opts.MinLines }
+	short := func(g []piece) bool {
+		return g[len(g)-1].end-g[0].start+1 < s.opts.MinLines || !slices.ContainsFunc(g, func(p piece) bool { return p.rank != rankSkip })
+	}
 	for _, p := range pieces {
 		if n := len(groups); n > 0 && short(groups[n-1]) && fits(groups[n-1], p) {
 			groups[n-1] = append(groups[n-1], p)
@@ -370,7 +397,7 @@ func (s splitter) emit(groups [][]piece) []Chunk {
 		sig := groupSignature(g)
 		if g[0].segment() {
 			p := g[0]
-			out = append(out, Chunk{Start: p.start + 1, End: p.start + 1, Signature: sig, Code: s.lines[p.start][p.lo:p.hi]})
+			out = append(out, Chunk{Start: p.start + 1, End: p.start + 1, Signature: sig, Code: s.lines[p.start][p.lo:p.hi], Offset: s.starts[p.start] + p.lo})
 			continue
 		}
 		start, end := g[0].start, g[len(g)-1].end
@@ -387,7 +414,8 @@ func (s splitter) emit(groups [][]piece) []Chunk {
 			Start:     start + 1,
 			End:       end + 1,
 			Signature: sig,
-			Code:      strings.Join(s.lines[start:end+1], "\n"),
+			Code:      s.text[s.starts[start] : s.starts[end]+len(s.lines[end])],
+			Offset:    s.starts[start],
 		})
 	}
 	return out

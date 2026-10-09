@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // binarySniffLen is how much of a file is checked for a NUL byte.
@@ -21,6 +23,7 @@ const binarySniffLen = 8 << 10
 type Options struct {
 	NoIgnore    bool  // also list gitignored files
 	Tests       bool  // also list test files and test data (see IsTest)
+	Docs        bool  // also list documentation (see IsDoc)
 	MaxFileSize int64 // skip larger files; 0 means no limit
 }
 
@@ -31,15 +34,18 @@ type File struct {
 }
 
 type Result struct {
-	Root     string // git top-level folder, or the first search path outside git
-	Files    []File // sorted by Path
-	Oversize []File // text files skipped for being over MaxFileSize
-	Tests    int    // text files skipped as tests because Options.Tests was off
+	Root      string // git top-level folder, or the first search path outside git
+	Repo      string // the repository's main checkout, shared by its worktrees (see Repo)
+	Files     []File // sorted by Path
+	Oversize  []File // text files skipped for being over MaxFileSize
+	Tests     int    // text files skipped as tests because Options.Tests was off
+	Generated int    // files skipped as generated (see IsGenerated), text or not
+	Docs      int    // text files skipped as docs because Options.Docs was off
 }
 
-// Walk lists text files under paths. Named files are always included, even
-// if ignored or tests; directories follow .gitignore unless opts.NoIgnore is
-// set, and skip test files unless opts.Tests is set.
+// Walk lists text files under paths. Named files are always included;
+// directories follow .gitignore unless opts.NoIgnore is set, skip generated
+// files, and skip tests and docs unless opts.Tests or opts.Docs is set.
 func Walk(paths []string, opts Options) (Result, error) {
 	var res Result
 	if len(paths) == 0 {
@@ -50,58 +56,102 @@ func Walk(paths []string, opts Options) (Result, error) {
 		return res, err
 	}
 	res.Root = root
+	res.Repo = repoOf(root)
 
+	// found is one file under the named path base. Only the part of its
+	// path below base is checked for tests, generated files and docs, so
+	// naming such a file or folder searches it.
+	type found struct{ display, below string }
+	var list []found
 	seen := map[string]bool{}
-	// add lists one file found under the named path base. Only the part of
-	// its path below base is checked for tests, so naming a test file or
-	// folder searches it.
-	add := func(display, base string) error {
+	add := func(display, base string) {
 		display = filepath.Clean(display)
 		if seen[display] {
-			return nil
+			return
 		}
 		seen[display] = true
-		f, ok, err := inspect(display)
-		if err != nil || !ok {
-			return err
+		below, err := filepath.Rel(base, display)
+		if err != nil {
+			below = "" // can't happen for paths found under base; checks nothing
 		}
-		f.Rel = relTo(root, display)
-		if below, err := filepath.Rel(base, display); err == nil && !opts.Tests && IsTest(filepath.ToSlash(below)) {
-			res.Tests++
-			return nil
+		below = filepath.ToSlash(below)
+		// Generated files are dropped unopened: an unignored node_modules
+		// can hold hundreds of thousands. A test among them is still
+		// generated, so --tests doesn't bring it back.
+		if IsGenerated(below) {
+			res.Generated++
+			return
 		}
-		if f.Size > opts.MaxFileSize && opts.MaxFileSize > 0 {
-			res.Oversize = append(res.Oversize, f)
-		} else {
-			res.Files = append(res.Files, f)
-		}
-		return nil
+		list = append(list, found{display, below})
 	}
-
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
 			return res, err
 		}
 		if !info.IsDir() {
-			if err := add(p, p); err != nil {
-				return res, err
-			}
+			add(p, p)
 			continue
 		}
-		var list []string
+		var names []string
 		if gitTop(p) != "" && !opts.NoIgnore {
-			list, err = gitFiles(p)
+			names, err = gitFiles(p)
 		} else {
-			list, err = walkDir(p, !opts.NoIgnore)
+			names, err = walkDir(p, !opts.NoIgnore)
 		}
 		if err != nil {
 			return res, err
 		}
-		for _, f := range list {
-			if err := add(f, p); err != nil {
-				return res, err
+		for _, n := range names {
+			add(n, p)
+		}
+	}
+
+	// Opening every file to check it is text is most of a walk's time, and
+	// spends it waiting on the file system, so it runs in parallel.
+	files := make([]File, len(list))
+	isText := make([]bool, len(list))
+	errs := make([]error, len(list))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(4*runtime.GOMAXPROCS(0), len(list)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				files[i], isText[i], errs[i] = inspect(list[i].display)
+				if isText[i] {
+					files[i].Rel = relTo(root, list[i].display)
+				}
 			}
+		}()
+	}
+	for i := range list {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+
+	for i, c := range list {
+		if errs[i] != nil {
+			return res, errs[i]
+		}
+		if !isText[i] {
+			continue
+		}
+		f := files[i]
+		switch {
+		case !opts.Tests && IsTest(c.below):
+			res.Tests++
+			continue
+		case !opts.Docs && IsDoc(c.below):
+			res.Docs++
+			continue
+		}
+		if f.Size > opts.MaxFileSize && opts.MaxFileSize > 0 {
+			res.Oversize = append(res.Oversize, f)
+		} else {
+			res.Files = append(res.Files, f)
 		}
 	}
 	sort.Slice(res.Files, func(i, j int) bool { return res.Files[i].Path < res.Files[j].Path })
@@ -128,6 +178,40 @@ func Root(path string) (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(abs)
+}
+
+// Repo names the repository holding path, the same for every worktree of
+// it: the main checkout's folder, or Root outside git. Answers are keyed by
+// repo-relative path and code, so worktrees can share one cache; giving each
+// its own would make every new worktree pay for a full scan again.
+func Repo(path string) (string, error) {
+	root, err := Root(path)
+	if err != nil {
+		return "", err
+	}
+	return repoOf(root), nil
+}
+
+func repoOf(root string) string {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return root // not in git
+	}
+	common := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(root, common)
+	}
+	if resolved, err := filepath.EvalSymlinks(common); err == nil {
+		common = resolved
+	}
+	// The usual layout is <main checkout>/.git; a bare repository or a
+	// submodule keeps its git folder elsewhere and is named by it.
+	if filepath.Base(common) == ".git" {
+		return filepath.Dir(common)
+	}
+	return common
 }
 
 func gitTop(dir string) string {

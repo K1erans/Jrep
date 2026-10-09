@@ -10,9 +10,9 @@ $ jrep "retries failed payments" src/
 ```
 
 Each file is split into function- or block-sized chunks, and Jev is asked
-about every chunk. Answers are cached per repo, so repeat searches, and
-searches at a different `--threshold`, make no new calls. Every chunk
-searched is sent to TypeSafe.
+about every chunk. Answers are cached per repository (worktrees share
+them), so repeat searches, and searches at a different `--threshold`, make
+no new calls. Every chunk searched is sent to TypeSafe.
 
 ## Install
 
@@ -48,7 +48,9 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
 - `-s` sends only chunks containing the question's words (or
   `--keywords 'a|b'`): faster and cheaper on big repos, but misses code
   that uses other words.
-- Test files and test data are skipped; `--tests` includes them.
+- Test files and test data are skipped; `--tests` includes them. Docs
+  (Markdown etc.) are skipped; `--docs` includes them. Lockfiles, source
+  maps, minified files, SVGs and `node_modules` are skipped unless named.
 - `--json` prints one object per match.
 - Files over 1 MB are skipped and listed on stderr; `--max-filesize 0`
   includes them.

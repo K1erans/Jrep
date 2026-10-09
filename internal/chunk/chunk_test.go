@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 type span struct {
@@ -46,6 +47,9 @@ func assertCovers(t *testing.T, src string, chunks []Chunk, opts Options) {
 		if !strings.Contains(strings.Join(lines[c.Start-1:c.End], "\n"), c.Code) {
 			t.Errorf("chunk %d-%d code is not its source lines", c.Start, c.End)
 		}
+		if c.Offset < 0 || c.Offset+len(c.Code) > len(src) || src[c.Offset:c.Offset+len(c.Code)] != c.Code {
+			t.Errorf("chunk %d-%d code is not the source at its offset %d", c.Start, c.End, c.Offset)
+		}
 		for i := c.Start; i <= c.End; i++ {
 			seen[i]++
 		}
@@ -82,9 +86,7 @@ func TestGoSplitsAtDeclarationsWithDocComments(t *testing.T) {
 	opts := Options{MinLines: 1, MaxLines: 300, MaxBytes: 1 << 20}
 	got := Split("retry.go", []byte(goSrc), opts)
 	assertSpans(t, got, []span{
-		{1, 1, "package billing"},
-		{3, 3, `import "errors"`},
-		{5, 11, "func RetryFailedPayment(invoice string, attempt int) error"},
+		{1, 11, "func RetryFailedPayment(invoice string, attempt int) error"},
 		{13, 15, "type Invoice struct"},
 		{17, 19, "func (i Invoice) Total() int"},
 	})
@@ -230,4 +232,42 @@ func TestDefaultsGiveDozenLineFunctionsTheirOwnChunk(t *testing.T) {
 	if fmt.Sprint(sigs) != fmt.Sprint(want) {
 		t.Fatalf("got %q, want %q", sigs, want)
 	}
+}
+
+func TestImportsNeverMakeAChunkOfTheirOwn(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 25; i++ {
+		fmt.Fprintf(&b, "import { thing%d } from \"./mod%d\";\n", i, i)
+	}
+	b.WriteString("\nexport function chargeCard(card: Card): Receipt {\n")
+	for i := 0; i < 12; i++ {
+		fmt.Fprintf(&b, "  const step%d = card.next();\n", i)
+	}
+	b.WriteString("  return receipt;\n}\n")
+	src := b.String()
+	got := Split("pay.ts", []byte(src), Default)
+	assertSpans(t, got, []span{{1, 41, "export function chargeCard(card: Card): Receipt"}})
+	assertCovers(t, src, got, Default)
+}
+
+func TestAParseThatRunsOutOfTimeFallsBack(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("package big\n\n")
+	for i := 0; i < 400; i++ {
+		fmt.Fprintf(&b, "func F%d(a int) int {\n\tif a > %d {\n\t\treturn a\n\t}\n\treturn %d\n}\n\n", i, i, i)
+	}
+	src := []byte(b.String())
+	opts := Options{MinLines: 1, MaxLines: 300, MaxBytes: 1 << 20}
+	// Only the parser knows "package big" is a package line, so only the
+	// parser merges it into the first function.
+	fallback := Split("big.unknownext", src, opts)[0]
+	if parsed := Split("big.go", src, opts)[0]; parsed.End == fallback.End {
+		t.Fatal("test needs a file the parser and the fallback split differently")
+	}
+	opts.ParseTimeout = time.Nanosecond
+	got := Split("big.go", src, opts)
+	if got[0] != fallback {
+		t.Fatalf("a timed-out parse should use the plain splitter: first chunk %v, want %v", spans(got[:1]), spans([]Chunk{fallback}))
+	}
+	assertCovers(t, string(src), got, opts)
 }

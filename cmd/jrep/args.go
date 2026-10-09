@@ -23,6 +23,7 @@ Prints matching line ranges, best first. Exit status: 0 match, 1 no match, 2 err
   --json                 one JSON object per match
   --no-ignore            also search gitignored files
   --tests                also search test files and test data
+  --docs                 also search documentation (Markdown, reStructuredText, AsciiDoc)
   --max-filesize 1M      skip larger files, listed on stderr (0 = no limit)
   --model jev-1.13.0     Jev model version
   --no-cache             don't read cached answers
@@ -51,6 +52,7 @@ type config struct {
 	JSON        bool
 	NoIgnore    bool
 	Tests       bool
+	Docs        bool
 	MaxFileSize int64
 	Model       string
 	NoCache     bool
@@ -122,6 +124,7 @@ func parseArgs(args []string) (config, error) {
 	fs.BoolVar(&cfg.JSON, "json", false, "")
 	fs.BoolVar(&cfg.NoIgnore, "no-ignore", false, "")
 	fs.BoolVar(&cfg.Tests, "tests", false, "")
+	fs.BoolVar(&cfg.Docs, "docs", false, "")
 	fs.Var(sizeValue{&cfg.MaxFileSize}, "max-filesize", "")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "")
 	fs.BoolVar(&cfg.NoCache, "no-cache", false, "")

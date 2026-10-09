@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // registers the driver
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -31,6 +33,11 @@ CREATE TABLE IF NOT EXISTS answers (
 	key       BLOB PRIMARY KEY,
 	noul      REAL NOT NULL,
 	model     TEXT NOT NULL,
+	last_used INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS chunks (
+	key       BLOB PRIMARY KEY,
+	layout    BLOB NOT NULL,
 	last_used INTEGER NOT NULL
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (
@@ -92,7 +99,16 @@ func Open(path, model string) (*SQLite, error) {
 	// for SQLite's lock.
 	db.SetMaxOpenConns(1)
 	c := &SQLite{db: db, model: model}
-	if _, err := db.Exec(schema); err != nil {
+	// The first connection to a new file switches it to WAL, which needs an
+	// exclusive lock and fails at once, without the busy timeout, while
+	// another process holds the file. A failed connection isn't kept, so
+	// trying again opens a fresh one.
+	err = c.createSchema()
+	for deadline := time.Now().Add(busyTimeoutMS * time.Millisecond); isBusy(err) && time.Now().Before(deadline); {
+		time.Sleep(time.Duration(5+rand.IntN(20)) * time.Millisecond)
+		err = c.createSchema()
+	}
+	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("opening cache %s: %w", path, err)
 	}
@@ -104,6 +120,27 @@ func Open(path, model string) (*SQLite, error) {
 }
 
 func (c *SQLite) Close() error { return c.db.Close() }
+
+func isBusy(err error) bool {
+	var se interface{ Code() int }
+	return errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_BUSY
+}
+
+// createSchema runs in a transaction, which takes the write lock up front
+// (_txlock=immediate) and so waits out the busy timeout. On its own, each
+// CREATE reads the schema and then upgrades to a write lock, and SQLite
+// fails such an upgrade at once when another process is doing the same.
+func (c *SQLite) createSchema() error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(schema); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 func (c *SQLite) cleanup() error {
 	t := now().Unix()
@@ -120,7 +157,11 @@ func (c *SQLite) cleanup() error {
 	if err == nil && t-last < int64(cleanupEvery/time.Second) {
 		return nil
 	}
-	if _, err := tx.Exec(`DELETE FROM answers WHERE last_used < ? OR model != ?`, t-int64(staleAfter/time.Second), c.model); err != nil {
+	stale := t - int64(staleAfter/time.Second)
+	if _, err := tx.Exec(`DELETE FROM answers WHERE last_used < ? OR model != ?`, stale, c.model); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM chunks WHERE last_used < ?`, stale); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO meta (name, value) VALUES ('last_cleanup', ?)`, t); err != nil {
@@ -132,7 +173,19 @@ func (c *SQLite) cleanup() error {
 // Get returns the cached probability for every key it holds, and marks
 // those rows as used.
 func (c *SQLite) Get(keys []Key) (map[Key]float64, error) {
-	out := make(map[Key]float64, len(keys))
+	return lookup[float64](c, "answers", "noul", keys)
+}
+
+// GetChunks returns the stored chunk layout for every key it holds, and
+// marks those rows as used.
+func (c *SQLite) GetChunks(keys []Key) (map[Key][]byte, error) {
+	return lookup[[]byte](c, "chunks", "layout", keys)
+}
+
+// lookup reads column for keys from table in batches, refreshing last_used
+// on rows that haven't been touched for a day.
+func lookup[V any](c *SQLite, table, column string, keys []Key) (map[Key]V, error) {
+	out := make(map[Key]V, len(keys))
 	t := now().Unix()
 	for len(keys) > 0 {
 		batch := keys[:min(lookupBatch, len(keys))]
@@ -142,22 +195,22 @@ func (c *SQLite) Get(keys []Key) (map[Key]float64, error) {
 			args[i] = k[:]
 		}
 		in := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
-		rows, err := c.db.Query(`SELECT key, noul, last_used FROM answers WHERE key IN (`+in+`)`, args...)
+		rows, err := c.db.Query(`SELECT key, `+column+`, last_used FROM `+table+` WHERE key IN (`+in+`)`, args...)
 		if err != nil {
 			return nil, err
 		}
 		var stale []any
 		for rows.Next() {
 			var raw []byte
-			var noul float64
+			var v V
 			var lastUsed int64
-			if err := rows.Scan(&raw, &noul, &lastUsed); err != nil {
+			if err := rows.Scan(&raw, &v, &lastUsed); err != nil {
 				rows.Close()
 				return nil, err
 			}
 			var k Key
 			copy(k[:], raw)
-			out[k] = noul
+			out[k] = v
 			if t-lastUsed > int64(touchAfter/time.Second) {
 				stale = append(stale, raw)
 			}
@@ -168,7 +221,7 @@ func (c *SQLite) Get(keys []Key) (map[Key]float64, error) {
 		}
 		if len(stale) > 0 {
 			in := strings.TrimSuffix(strings.Repeat("?,", len(stale)), ",")
-			if _, err := c.db.Exec(`UPDATE answers SET last_used = ? WHERE key IN (`+in+`)`, append([]any{t}, stale...)...); err != nil {
+			if _, err := c.db.Exec(`UPDATE `+table+` SET last_used = ? WHERE key IN (`+in+`)`, append([]any{t}, stale...)...); err != nil {
 				return nil, err
 			}
 		}
@@ -182,4 +235,29 @@ func (c *SQLite) Put(key Key, noul float64) error {
 	_, err := c.db.Exec(`INSERT OR IGNORE INTO answers (key, noul, model, last_used) VALUES (?, ?, ?, ?)`,
 		key[:], noul, c.model, now().Unix())
 	return err
+}
+
+// PutChunks saves chunk layouts in one transaction. As with answers, an
+// existing layout for a key is kept.
+func (c *SQLite) PutChunks(layouts map[Key][]byte) error {
+	if len(layouts) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO chunks (key, layout, last_used) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	t := now().Unix()
+	for k, layout := range layouts {
+		if _, err := stmt.Exec(k[:], layout, t); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

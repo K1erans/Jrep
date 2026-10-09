@@ -34,8 +34,8 @@ const maxListed = 10
 type app struct {
 	stdout, stderr io.Writer
 	client         func() (jev.Client, error)
-	openCache      func(root, model string) (cache.Cache, func() error, error)
-	clearCache     func(root string) error
+	openCache      func(repo, model string) (cache.Cache, func() error, error)
+	clearCache     func(repo string) error
 }
 
 func main() {
@@ -64,23 +64,23 @@ func realApp(stdout, stderr io.Writer) app {
 			}
 			return jev.NewHTTP(key, opts), nil
 		},
-		openCache: func(root, model string) (cache.Cache, func() error, error) {
+		openCache: func(repo, model string) (cache.Cache, func() error, error) {
 			dir, err := cache.Dir()
 			if err != nil {
 				return nil, nil, err
 			}
-			c, err := cache.Open(cache.Path(dir, root), model)
+			c, err := cache.Open(cache.Path(dir, repo), model)
 			if err != nil {
 				return nil, nil, err
 			}
 			return c, c.Close, nil
 		},
-		clearCache: func(root string) error {
+		clearCache: func(repo string) error {
 			dir, err := cache.Dir()
 			if err != nil {
 				return err
 			}
-			return cache.Clear(cache.Path(dir, root))
+			return cache.Clear(cache.Path(dir, repo))
 		},
 	}
 }
@@ -113,14 +113,14 @@ func (a app) run(ctx context.Context, args []string) int {
 
 func (a app) search(ctx context.Context, cfg config) (int, error) {
 	if cfg.ClearCache {
-		root, err := walk.Root(cfg.Paths[0])
+		repo, err := walk.Repo(cfg.Paths[0])
 		if err != nil {
 			return exitError, err
 		}
-		return exitMatch, a.clearCache(root)
+		return exitMatch, a.clearCache(repo)
 	}
 
-	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: cfg.Tests, MaxFileSize: cfg.MaxFileSize})
+	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: cfg.Tests, Docs: cfg.Docs, MaxFileSize: cfg.MaxFileSize})
 	if err != nil {
 		return exitError, err
 	}
@@ -128,8 +128,35 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 	if files.Tests > 0 {
 		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
 	}
+	if files.Generated > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d generated %s not searched (lockfiles, source maps, minified, SVG, node_modules; name %s to include)\n",
+			files.Generated, plural(files.Generated, "file", "files"), plural(files.Generated, "it", "them"))
+	}
+	if files.Docs > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d %s not searched (use --docs to include)\n", files.Docs, plural(files.Docs, "doc", "docs"))
+	}
 
-	chunks, err := search.Load(files.Files, chunk.Default)
+	// A broken cache costs money, not correctness: warn and carry on.
+	store, closeStore, err := a.openCache(files.Repo, cfg.Model)
+	if err != nil {
+		fmt.Fprintf(a.stderr, "jrep: warning: cache unavailable, answers won't be saved: %v\n", err)
+		store, closeStore = cache.NewMemory(), func() error { return nil }
+	}
+	defer closeStore()
+	warned := false
+	onCacheError := func(err error) {
+		if !warned {
+			warned = true
+			fmt.Fprintf(a.stderr, "jrep: warning: cache not working: %v\n", err)
+		}
+	}
+
+	chunks, err := search.Load(files.Files, search.LoadOptions{
+		Chunk:        chunk.Default,
+		Store:        store,
+		ReadCache:    !cfg.NoCache,
+		OnCacheError: onCacheError,
+	})
 	if err != nil {
 		return exitError, err
 	}
@@ -150,31 +177,17 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		chunks = kept
 	}
 
-	// A broken cache costs money, not correctness: warn and carry on.
-	store, closeStore, err := a.openCache(files.Root, cfg.Model)
-	if err != nil {
-		fmt.Fprintf(a.stderr, "jrep: warning: cache unavailable, answers won't be saved: %v\n", err)
-		store, closeStore = cache.NewMemory(), func() error { return nil }
-	}
-	defer closeStore()
-
 	client, err := a.client()
 	if err != nil {
 		return exitError, err
 	}
-	warned := false
 	results, err := search.Run(ctx, chunks, client, store, search.Options{
-		Questions: cfg.Questions,
-		Model:     cfg.Model,
-		Threshold: cfg.Threshold,
-		Top:       cfg.Top,
-		ReadCache: !cfg.NoCache,
-		OnCacheError: func(err error) {
-			if !warned {
-				warned = true
-				fmt.Fprintf(a.stderr, "jrep: warning: answers not cached: %v\n", err)
-			}
-		},
+		Questions:    cfg.Questions,
+		Model:        cfg.Model,
+		Threshold:    cfg.Threshold,
+		Top:          cfg.Top,
+		ReadCache:    !cfg.NoCache,
+		OnCacheError: onCacheError,
 	})
 	if err != nil {
 		return exitError, err

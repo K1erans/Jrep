@@ -7,11 +7,12 @@ import (
 	"strings"
 )
 
-// State is one chunk, sent as Jev's state.
+// State is one chunk, sent as Jev's state. It has no line numbers: they
+// say nothing about what the code does, and as part of the cache key they
+// would make an edit near the top of a file re-ask every chunk below it.
 type State struct {
-	Path  string `json:"path"`
-	Lines string `json:"lines"`
-	Code  string `json:"code"`
+	Path string `json:"path"`
+	Code string `json:"code"`
 }
 
 // Request asks every question about one state in a single call, so the
