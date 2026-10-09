@@ -53,9 +53,10 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
   (cached, so it's free).
 - `-q` adds questions to the same scan at no extra cost; prefer one call
   with several `-q` over several calls.
-- Pass the folders most likely to hold the code (`ls` first if unsure):
-  cost scales with how much code is searched, and stderr says how many
-  chunks Jev was asked about.
+- Pass the one folder most likely to hold the code, as deep as you're
+  sure of (`ls` first); add another or step up to the parent only after a
+  miss. Cost scales with how much code is searched, and stderr says how
+  many chunks Jev was asked about.
 - When a search misses and you reword the question, add
   `--refine "your earlier question"`: it searches only the 300 chunks that
   best matched the earlier one, about a tenth of the cost of a new scan.

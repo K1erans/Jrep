@@ -10,19 +10,21 @@ give it, so a search costs money and time in proportion to how much code it
 covers: about 1¢ and a second per 400 chunks, and a whole repo can be
 thousands. Answers are cached, so repeating a question is free.
 
-## 1. Pick the folders first
+## 1. Pick one folder first
 
 Don't search the whole repo by default. Look at the layout, then pass the
-narrowest folder you're confident holds the code:
+one folder you're confident holds the code, as deep as you're sure of:
 
     ls                       # and ls a level down where it helps
     jrep "retries failed payments" src/billing/
 
 - Choose by what the folder is for: payments under `billing/`, storage
   under `storage/`, request handlers under `api/` or `ui/`.
-- Several folders are fine: `jrep "question" src/billing/ src/http/`.
-- When unsure between two levels, take the parent folder. Search the whole
-  repo only when you have no idea where the code lives.
+- Go as deep as you're sure of: `src/billing/retry/` costs less than
+  `src/billing/`, which costs less than `src/`.
+- Start with one folder. Add a second, or step up to the parent, only after
+  a search misses. Search the whole repo only when you have no idea where
+  the code lives.
 - stderr says `asking Jev about N chunks`: that is the cost of the search.
   Nothing is printed when every answer was cached.
 
@@ -37,7 +39,7 @@ narrowest folder you're confident holds the code:
 - Ask everything you need in one call: `-q` adds questions to the same scan
   at almost no extra cost.
 
-      jrep "validates webhook signatures" -q "parses webhook payloads" internal/
+      jrep "validates webhook signatures" -q "parses webhook payloads" internal/webhooks/
 
 ## 3. Read the results
 
@@ -52,7 +54,10 @@ In this order, cheapest first:
 1. Lower the threshold: `--threshold 0.3`. It's served from the cache, so
    it's free, and the right code is often just under the default 0.6.
 2. Narrow the folder if a result points at the right area.
-3. Reword the question and add `--refine "your earlier question"`: it asks
+3. Widen if nothing comes close: add the next likely folder, or step up to
+   the parent. Ask the same question, so the folders already searched are
+   answered from the cache.
+4. Reword the question and add `--refine "your earlier question"`: it asks
    the new wording about only the 300 chunks that best matched the earlier
    one, about a tenth of the cost of a new scan.
 
