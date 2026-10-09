@@ -71,11 +71,8 @@ func Load(files []walk.File, opts LoadOptions) ([]Chunk, error) {
 		}
 		cs, ok := decodeLayout(layouts[keys[i]], src)
 		if !ok {
-			var stable bool
-			cs, stable = chunk.SplitStable(f.Path, src, opts.Chunk)
-			if stable {
-				fresh[i] = encodeLayout(cs)
-			}
+			cs = chunk.Split(f.Path, src, opts.Chunk)
+			fresh[i] = encodeLayout(cs)
 		}
 		per[i] = make([]Chunk, len(cs))
 		for j, c := range cs {

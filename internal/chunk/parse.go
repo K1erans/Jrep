@@ -1,7 +1,6 @@
 package chunk
 
 import (
-	"errors"
 	"sync"
 	"time"
 
@@ -19,13 +18,12 @@ type poolKey struct {
 var pools sync.Map // poolKey → *gotreesitter.ParserPool
 
 // parse parses src with the grammar for filename. It fails when there is no
-// grammar, the source has syntax errors, or the parse stops early, which
-// is almost always from running past timeout (0 means no limit). stopped
-// reports that last case: it depends on how busy the machine was.
-func parse(filename string, src []byte, timeout time.Duration) (bt *gotreesitter.BoundTree, ok, stopped bool) {
+// grammar, the source has syntax errors, or the parse stops early: at the
+// parser's own work limits or past timeout (0 means no limit).
+func parse(filename string, src []byte, timeout time.Duration) (bt *gotreesitter.BoundTree, ok bool) {
 	entry := grammars.DetectLanguage(filename)
 	if entry == nil {
-		return nil, false, false
+		return nil, false
 	}
 	lang := entry.Language()
 	if timeout > 0 {
@@ -49,12 +47,12 @@ func parse(filename string, src []byte, timeout time.Duration) (bt *gotreesitter
 		if tree != nil {
 			tree.Release()
 		}
-		return nil, false, errors.Is(err, gotreesitter.ErrParseStoppedEarly)
+		return nil, false
 	}
 	bt = gotreesitter.Bind(tree)
 	if root := bt.RootNode(); root == nil || root.HasError() {
 		bt.Release()
-		return nil, false, false
+		return nil, false
 	}
-	return bt, true, false
+	return bt, true
 }

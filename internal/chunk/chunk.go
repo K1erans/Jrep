@@ -24,8 +24,10 @@ type Options struct {
 	MaxLines int // pieces longer than this are split
 	MaxBytes int // hard cap on a chunk's code, to stay inside Jev's token limit
 
-	// ParseTimeout gives up on tree-sitter for a file and uses the plain
-	// splitter instead; 0 means no limit.
+	// ParseTimeout gives up on a runaway tree-sitter parse and uses the
+	// plain splitter instead; 0 means no limit. It is a safety net, not a
+	// speed limit: whether a parse beats the clock depends on how busy the
+	// machine is, so a file near it could split differently each search.
 	ParseTimeout time.Duration
 }
 
@@ -36,11 +38,14 @@ type Options struct {
 // smaller mostly buys overhead. 48 KB is ~17.5K tokens at bytes ÷ 2.75,
 // well inside Jev's 32K state limit.
 //
-// Nearly every file parses in a few milliseconds, but a handful take
-// seconds (one 44 KB Swift file took 9.7 s) and usually end in a syntax
-// error anyway. On a 17.5K-file repo, 250 ms cut chunking from 14.8 s to
-// 6.9 s and sent 24 files to the plain splitter.
-var Default = Options{MinLines: 10, MaxLines: 300, MaxBytes: 48 << 10, ParseTimeout: 250 * time.Millisecond}
+// Nearly every file parses in a few milliseconds and the slowest take
+// seconds: on a 15K-file repo the worst was a 44 KB Swift file, 5.7 s
+// alone and 8.8 s with every core parsing. A 250 ms limit once sent 23
+// files there to the plain splitter on one search and not the next,
+// including central ones like Effect.ts (146 ms alone), so chunks and
+// cache keys changed between identical searches. The parser's own work
+// limits scale with file size and don't depend on the clock.
+var Default = Options{MinLines: 10, MaxLines: 300, MaxBytes: 48 << 10, ParseTimeout: 30 * time.Second}
 
 // Version names how Split cuts files. Bump it whenever the same file could
 // split differently, so chunk layouts cached by search.Load aren't reused.
@@ -70,31 +75,23 @@ func (p piece) segment() bool { return p.hi > 0 }
 // Split cuts src into chunks. filename picks the tree-sitter grammar; files
 // without one, or that fail to parse, use a plain indentation splitter.
 func Split(filename string, src []byte, opts Options) []Chunk {
-	cs, _ := SplitStable(filename, src, opts)
-	return cs
-}
-
-// SplitStable is Split, also reporting whether the same input always
-// splits the same way. It doesn't when the parse ran out of time, which a
-// less busy machine might avoid, so such a split shouldn't be cached.
-func SplitStable(filename string, src []byte, opts Options) (chunks []Chunk, stable bool) {
 	text := string(src)
 	lines := strings.Split(text, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 	if len(lines) == 0 {
-		return nil, true
+		return nil
 	}
 	s := splitter{text: text, lines: lines, starts: make([]int, len(lines)), opts: opts}
 	for r := 1; r < len(lines); r++ {
 		s.starts[r] = s.starts[r-1] + len(lines[r-1]) + 1
 	}
-	pieces, ok, stopped := s.treePieces(filename, src)
+	pieces, ok := s.treePieces(filename, src)
 	if !ok {
 		pieces = s.fallbackPieces()
 	}
-	return s.emit(s.merge(s.limit(pieces))), !stopped
+	return s.emit(s.merge(s.limit(pieces)))
 }
 
 type splitter struct {
@@ -124,12 +121,11 @@ type candidate struct {
 	comment bool
 }
 
-// treePieces splits at syntax nodes. stopped reports a parse that ran out
-// of time.
-func (s splitter) treePieces(filename string, src []byte) (pieces []piece, ok, stopped bool) {
-	bt, ok, stopped := parse(filename, src, s.opts.ParseTimeout)
+// treePieces splits at syntax nodes.
+func (s splitter) treePieces(filename string, src []byte) (pieces []piece, ok bool) {
+	bt, ok := parse(filename, src, s.opts.ParseTimeout)
 	if !ok {
-		return nil, false, stopped
+		return nil, false
 	}
 	defer bt.Release()
 	cands := s.candidates(bt, bt.RootNode(), "")
@@ -146,7 +142,7 @@ func (s splitter) treePieces(filename string, src []byte) (pieces []piece, ok, s
 		}
 		pieces = append(pieces, piece{start: start, end: end, sig: c.sig, rank: c.rank})
 	}
-	return pieces, len(pieces) > 0, false
+	return pieces, len(pieces) > 0
 }
 
 // candidates lists where pieces may start inside node. Children too big to

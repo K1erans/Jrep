@@ -111,19 +111,24 @@ func TestABrokenChunkCacheOnlyWarns(t *testing.T) {
 	}
 }
 
-func TestLayoutsFromATimedOutParseAreNotSaved(t *testing.T) {
+func TestLayoutsFromATimedOutParseAreSaved(t *testing.T) {
 	fs := files(t)
 	store := &layoutCounter{Memory: cache.NewMemory()}
 	o := small()
-	o.ParseTimeout = time.Nanosecond // a busy machine; next time the parse may finish
-	got, err := Load(fs, LoadOptions{Chunk: o, Store: store, ReadCache: true})
+	o.ParseTimeout = time.Nanosecond // a runaway parse
+	lo := LoadOptions{Chunk: o, Store: store, ReadCache: true}
+	got, err := Load(fs, lo)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) == 0 {
 		t.Fatal("files still get chunks from the plain splitter")
 	}
-	if store.written != 0 {
-		t.Fatalf("a timed-out split shouldn't be cached, saved %d", store.written)
+	if store.written != 2 {
+		t.Fatalf("the plain split should be cached so the parse is paid once, saved %d", store.written)
+	}
+	again, _ := Load(fs, lo)
+	if !reflect.DeepEqual(again, got) || store.written != 2 {
+		t.Fatalf("a repeat load should reuse the saved split, saved %d more", store.written-2)
 	}
 }
