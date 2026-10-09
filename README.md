@@ -26,6 +26,14 @@ make install                  # common-language grammars only, ~20 MB
 Run `jrep -h` for flags and environment variables. `PLAN.md` explains the
 design.
 
+## Agent skill
+
+`skills/jrep/SKILL.md` teaches an agent to use jrep well, chiefly to pass
+the folders most likely to hold the code instead of scanning the whole repo,
+since cost scales with the code searched. `make install-skill` copies it to
+`~/.claude/skills/jrep/` for Claude Code; other agents can read the file as
+it is.
+
 ## Snippet for AGENTS.md / CLAUDE.md
 
 ```markdown
@@ -45,6 +53,9 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
   (cached, so it's free).
 - `-q` adds questions to the same scan at no extra cost; prefer one call
   with several `-q` over several calls.
+- Pass the folders most likely to hold the code (`ls` first if unsure):
+  cost scales with how much code is searched, and stderr says how many
+  chunks Jev was asked about.
 - When a search misses and you reword the question, add
   `--refine "your earlier question"`: it searches only the 300 chunks that
   best matched the earlier one, about a tenth of the cost of a new scan.
@@ -53,7 +64,8 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
   that uses other words.
 - Test files and test data are skipped; `--tests` includes them. Docs
   (Markdown etc.) are skipped; `--docs` includes them. Lockfiles, source
-  maps, minified files, SVGs and `node_modules` are skipped unless named.
+  maps, minified files, SVGs, `node_modules` and translation catalogs are
+  skipped unless named.
 - `--json` prints one object per match.
 - Files over 1 MB are skipped and listed on stderr; `--max-filesize 0`
   includes them.

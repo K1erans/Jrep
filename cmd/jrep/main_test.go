@@ -131,7 +131,7 @@ func TestJSONAndSeveralQuestions(t *testing.T) {
 	if h.out.String() != want {
 		t.Fatalf("got\n%s", h.out.String())
 	}
-	if want := "parses yaml: no matches above 0.60 (best: 0.10 src/billing/retry.go:1-6)\n"; h.errOut.String() != want {
+	if want := "jrep: asking Jev about 2 chunks\nparses yaml: no matches above 0.60 (best: 0.10 src/billing/retry.go:1-6)\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 }
@@ -144,7 +144,7 @@ func TestOversizeFilesAreListedOnStderr(t *testing.T) {
 	project(t, files)
 	h := newHarness(scorer())
 	h.run("--max-filesize", "1K", "retries failed payments")
-	if want := "jrep: skipped 1 file over 1 KB: dist/app.js (use --max-filesize 0 to include)\n"; h.errOut.String() != want {
+	if want := "jrep: skipped 1 file over 1 KB: dist/app.js (use --max-filesize 0 to include)\njrep: asking Jev about 2 chunks\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 	if strings.Contains(h.out.String(), "dist/app.js") {
@@ -239,7 +239,7 @@ func TestRefineAsksOnlyAboutChunksThatMatchedTheEarlierQuestion(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].State.Path != "src/billing/retry.go" {
 		t.Fatalf("only chunks answered for the earlier question should be sent, got %d requests", len(reqs))
 	}
-	if want := "jrep: --refine: searching the 1 chunk that best matched \"retries failed payments\"\n"; h.errOut.String() != want {
+	if want := "jrep: --refine: searching the 1 chunk that best matched \"retries failed payments\"\njrep: asking Jev about 1 chunk\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 
@@ -342,22 +342,54 @@ func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
 			t.Fatal("test files aren't sent by default")
 		}
 	}
-	if want := "jrep: 1 test file not searched (use --tests to include)\n"; h.errOut.String() != want {
+	if want := "jrep: 1 test file not searched (use --tests to include)\njrep: asking Jev about 2 chunks\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 
 	if code := h.run("--tests", "parses yaml"); code != exitMatch {
 		t.Fatalf("--tests: exit %d, %s", code, h.errOut.String())
 	}
-	if !strings.Contains(h.out.String(), "src/billing/retry_test.go:1-3") || h.errOut.String() != "" {
+	if !strings.Contains(h.out.String(), "src/billing/retry_test.go:1-3") || h.errOut.String() != "jrep: asking Jev about 1 chunk\n" {
 		t.Fatalf("out %q err %q", h.out.String(), h.errOut.String())
 	}
 
 	if code := h.run("retries failed payments"); code != exitMatch {
 		t.Fatalf("exit %d", code)
 	}
-	if want := "jrep: 1 test file not searched (use --tests to include)\n"; h.errOut.String() != want {
+	if want := "jrep: 1 test file not searched (use --tests to include)\njrep: asking Jev about 2 chunks\n"; h.errOut.String() != want {
 		t.Fatalf("skipped tests are reported even when something matched; stderr %q", h.errOut.String())
+	}
+}
+
+func TestTranslationsAreLeftOutAndReported(t *testing.T) {
+	files := map[string]string{"locales/de.json": "{\"charge\": \"belasten\"}\n", "po/fr.po": "msgid \"charge\"\n"}
+	for k, v := range billing {
+		files[k] = v
+	}
+	project(t, files)
+	fake := scorer()
+	h := newHarness(fake)
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, h.errOut.String())
+	}
+	if n := len(fake.Requests()); n != 2 {
+		t.Fatalf("only the two source files should be sent, got %d requests", n)
+	}
+	if want := "jrep: 2 translation files not searched (name them to include)\n"; !strings.HasPrefix(h.errOut.String(), want) {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+}
+
+func TestStderrSaysHowManyChunksJevIsAskedAbout(t *testing.T) {
+	project(t, billing)
+	h := newHarness(scorer())
+	h.run("retries failed payments")
+	if want := "jrep: asking Jev about 2 chunks\n"; h.errOut.String() != want {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+	h.run("retries failed payments")
+	if h.errOut.String() != "" {
+		t.Fatalf("a fully cached search asks nothing and says nothing: %q", h.errOut.String())
 	}
 }
 
@@ -381,7 +413,8 @@ func TestDocsAndGeneratedFilesAreLeftOutAndReported(t *testing.T) {
 		}
 	}
 	want := "jrep: 1 generated file not searched (lockfiles, source maps, minified, SVG, node_modules; name it to include)\n" +
-		"jrep: 1 doc not searched (use --docs to include)\n"
+		"jrep: 1 doc not searched (use --docs to include)\n" +
+		"jrep: asking Jev about 2 chunks\n"
 	if h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}

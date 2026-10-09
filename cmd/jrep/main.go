@@ -138,6 +138,10 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		fmt.Fprintf(a.stderr, "jrep: %d generated %s not searched (lockfiles, source maps, minified, SVG, node_modules; name %s to include)\n",
 			files.Generated, plural(files.Generated, "file", "files"), plural(files.Generated, "it", "them"))
 	}
+	if files.Translations > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d translation %s not searched (name %s to include)\n",
+			files.Translations, plural(files.Translations, "file", "files"), plural(files.Translations, "it", "them"))
+	}
 	if files.Docs > 0 {
 		fmt.Fprintf(a.stderr, "jrep: %d %s not searched (use --docs to include)\n", files.Docs, plural(files.Docs, "doc", "docs"))
 	}
@@ -204,6 +208,9 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		Top:          cfg.Top,
 		ReadCache:    !cfg.NoCache,
 		OnCacheError: onCacheError,
+		OnAsk: func(n int) {
+			fmt.Fprintf(a.stderr, "jrep: asking Jev about %d %s\n", n, plural(n, "chunk", "chunks"))
+		},
 	})
 	if err != nil {
 		return exitError, err

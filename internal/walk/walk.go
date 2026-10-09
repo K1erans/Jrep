@@ -41,11 +41,14 @@ type Result struct {
 	Tests     int    // text files skipped as tests because Options.Tests was off
 	Generated int    // files skipped as generated (see IsGenerated), text or not
 	Docs      int    // text files skipped as docs because Options.Docs was off
+
+	Translations int // files skipped as translation catalogs (see IsTranslation)
 }
 
 // Walk lists text files under paths. Named files are always included;
 // directories follow .gitignore unless opts.NoIgnore is set, skip generated
-// files, and skip tests and docs unless opts.Tests or opts.Docs is set.
+// files and translations, and skip tests and docs unless opts.Tests or
+// opts.Docs is set.
 func Walk(paths []string, opts Options) (Result, error) {
 	var res Result
 	if len(paths) == 0 {
@@ -59,8 +62,8 @@ func Walk(paths []string, opts Options) (Result, error) {
 	res.Repo = repoOf(root)
 
 	// found is one file under the named path base. Only the part of its
-	// path below base is checked for tests, generated files and docs, so
-	// naming such a file or folder searches it.
+	// path below base is checked for tests, generated files, translations
+	// and docs, so naming such a file or folder searches it.
 	type found struct{ display, below string }
 	var list []found
 	seen := map[string]bool{}
@@ -80,6 +83,10 @@ func Walk(paths []string, opts Options) (Result, error) {
 		// generated, so --tests doesn't bring it back.
 		if IsGenerated(below) {
 			res.Generated++
+			return
+		}
+		if IsTranslation(below) {
+			res.Translations++
 			return
 		}
 		list = append(list, found{display, below})

@@ -37,6 +37,9 @@ type Options struct {
 
 	// OnCacheError hears about failed cache writes, which don't stop a search.
 	OnCacheError func(error)
+
+	// OnAsk hears how many chunks are about to be sent to Jev, when any are.
+	OnAsk func(chunks int)
 }
 
 type Match struct {
@@ -130,6 +133,9 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 			}
 		}
 		return nil
+	}
+	if len(tasks) > 0 && opts.OnAsk != nil {
+		opts.OnAsk(len(tasks))
 	}
 	if err := parallel(ctx, tasks, cmp.Or(opts.Workers, DefaultWorkers), ask); err != nil {
 		return nil, err

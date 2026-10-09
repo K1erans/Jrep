@@ -40,7 +40,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 19. As a developer, I want `--no-ignore`, so that I can search ignored files on purpose.
 19a. As a coding agent, I want test files and test data skipped unless I pass `--tests`, so that the code under test isn't crowded out of the results.
 19b. As a coding agent, I want docs skipped unless I pass `--docs`, so that prose describing a feature doesn't crowd out its code.
-19c. As a developer, I want lockfiles, source maps, minified bundles, SVGs and `node_modules` skipped unless named, so that I don't pay for files that never answer a question.
+19c. As a developer, I want lockfiles, source maps, minified bundles, SVGs, `node_modules` and translation catalogs skipped unless named, so that I don't pay for files that never answer a question.
 20. As a developer, I want binary files skipped silently, so that they never reach Jev.
 21. As a coding agent, I want files over `--max-filesize` (default 1 MB) skipped and listed on stderr, so that nothing is skipped without my knowing.
 22. As a coding agent, I want the skip message to say how to include those files (`--max-filesize 0`), so that I can rerun at once.
@@ -71,6 +71,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 47. As a developer, I want Ctrl-C to stop a search promptly and keep the answers saved so far, so that interrupting costs nothing extra.
 48. As a coding agent, I want a short AGENTS.md / CLAUDE.md snippet explaining how and when to use jrep, so that I use it well with no other instructions.
 49. As a coding agent, I want to retry a reworded question over only the chunks that best matched my earlier question, so that rephrasing after a miss costs a tenth of a new scan.
+50. As a coding agent, I want a skill that tells me to pass the folders most likely to hold the code, and a stderr line saying how many chunks Jev was asked about, so that I search no more code than I need to.
 
 ## Implementation Decisions
 

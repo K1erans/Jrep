@@ -415,3 +415,42 @@ func TestWorktreesShareTheMainCheckoutAsRepo(t *testing.T) {
 		t.Errorf("outside git the repo is the root: %q vs %q", res.Repo, res.Root)
 	}
 }
+
+func TestTranslationsAreSkippedUnlessNamed(t *testing.T) {
+	dir := t.TempDir()
+	tree(t, dir, map[string]string{
+		"main.go":                              "package main\n",
+		"internal/locale/translations/de.json": "{}\n",
+		"internal/locale/catalog.go":           "package locale\n", // code that loads them is searched
+		"config/locales/fr.yml":                "fr:\n",
+		"src/i18n/es.json":                     "{}\n",
+		"app/l10n/ja.toml":                     "x\n",
+		"res/Lang/pt.properties":               "x\n",
+		"po/nl.po":                             "msgid \"\"\n",
+		"messages.pot":                         "msgid \"\"\n",
+		"lib/l10n/app_en.arb":                  "{}\n",
+		"ios/en.lproj/Localizable.strings":     "\"a\" = \"b\";\n",
+		"web/xlf/messages.fr.XLF":              "<xliff/>\n",
+		"web/messages.de.xliff":                "<xliff/>\n",
+		"src/language/parser.json":             "{}\n", // not a translation folder
+		"config/settings.json":                 "{}\n",
+	})
+	t.Chdir(dir)
+
+	res, err := Walk([]string{"."}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"config/settings.json", "internal/locale/catalog.go", "main.go", "src/language/parser.json"}
+	if got := paths(res.Files); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v\nwant %v", got, want)
+	}
+	if res.Translations != 11 {
+		t.Fatalf("want 11 translation files counted as skipped, got %d", res.Translations)
+	}
+
+	res, _ = Walk([]string{"internal/locale/translations", "po/nl.po"}, Options{})
+	if got := paths(res.Files); !reflect.DeepEqual(got, []string{"internal/locale/translations/de.json", "po/nl.po"}) {
+		t.Fatalf("translations named on the command line are searched: %v", got)
+	}
+}
