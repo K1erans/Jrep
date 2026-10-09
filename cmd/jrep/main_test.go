@@ -227,6 +227,30 @@ func TestPrepassSendsOnlyChunksWithKeywords(t *testing.T) {
 	}
 }
 
+func TestRefineAsksOnlyAboutChunksThatMatchedTheEarlierQuestion(t *testing.T) {
+	project(t, billing)
+	fake := scorer()
+	h := newHarness(fake)
+	h.run("-s", "retries failed payments") // answers only for retry.go
+	if code := h.run("--refine", "retries failed payments", "sends email"); code != exitNoMatch {
+		t.Fatalf("exit %d, stderr %s", code, h.errOut.String())
+	}
+	reqs := fake.Requests()[1:]
+	if len(reqs) != 1 || reqs[0].State.Path != "src/billing/retry.go" {
+		t.Fatalf("only chunks answered for the earlier question should be sent, got %d requests", len(reqs))
+	}
+	if want := "jrep: --refine: searching the 1 chunk that best matched \"retries failed payments\"\n"; h.errOut.String() != want {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+
+	if code := h.run("--refine", "parses yaml", "sends email"); code != exitError || !strings.Contains(h.errOut.String(), `no cached answers for "parses yaml"`) {
+		t.Fatalf("refining by a question never asked: exit %d, stderr %q", code, h.errOut.String())
+	}
+	if len(fake.Requests()) != 2 {
+		t.Fatal("a failed --refine sends nothing")
+	}
+}
+
 func TestPrepassThatKeepsNothingSaysWhy(t *testing.T) {
 	project(t, billing)
 	h := newHarness(scorer())

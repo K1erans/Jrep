@@ -104,3 +104,16 @@ func TestParseArgsErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestRefineNamesAnEarlierQuestionAndNeedsTheCache(t *testing.T) {
+	cfg, err := parseArgs([]string{"removes blur from images", "--refine", "strips image resize params"})
+	if err != nil || cfg.Refine != "strips image resize params" {
+		t.Fatalf("got %q, %v", cfg.Refine, err)
+	}
+	if _, err := parseArgs([]string{"q", "--refine", " "}); err == nil {
+		t.Fatal("an empty --refine question should be rejected")
+	}
+	if _, err := parseArgs([]string{"q", "--refine", "old", "--no-cache"}); err == nil || !strings.Contains(err.Error(), "--no-cache") {
+		t.Fatalf("--refine reads cached answers, so --no-cache should be rejected: %v", err)
+	}
+}

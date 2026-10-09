@@ -31,6 +31,7 @@ jrep [flags] "question" [path...]
   -q "question"          extra question, repeatable; answered in the same Jev calls
   -s                     keyword pre-pass first, fewer chunks sent to Jev
   --keywords 'a|b|c'     regex for the pre-pass (default: words from the question)
+  --refine "earlier"     search only the 300 chunks that best matched an earlier question
   --threshold 0.6        minimum probability to count as a match
   --top 10               maximum results per question
   --json                 one JSON object per match
@@ -114,6 +115,12 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 - Use `--keywords` if given. Otherwise use the question's words, minus common stopwords.
 - Matching is case-insensitive. A chunk is kept if any keyword appears.
 - Runs locally.
+
+### 3b. Refining a retry (`--refine`)
+
+- A reworded question costs a full scan, and agents reword when the first answer missed. `--refine "earlier question"` reads the earlier question's cached answers and asks the new one about only its top 300 chunks.
+- The agent names the earlier question rather than jrep guessing from similar wording: a retry exists because the first answer was poor, so reusing its answers would repeat the miss. Replaying the v3 challenges, reusing answers got 0 of 4 real retries right; narrowing got 3 of 4, the same as full rescans, at 9% of the cost.
+- Chunks with no cached answer for the earlier question are left out: it never saw them, and including them could make the retry a full scan. Refining by a question never asked is an error, not a silent full scan.
 
 ### 4–7. Jev calls
 

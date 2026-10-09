@@ -45,6 +45,9 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
   (cached, so it's free).
 - `-q` adds questions to the same scan at no extra cost; prefer one call
   with several `-q` over several calls.
+- When a search misses and you reword the question, add
+  `--refine "your earlier question"`: it searches only the 300 chunks that
+  best matched the earlier one, about a tenth of the cost of a new scan.
 - `-s` sends only chunks containing the question's words (or
   `--keywords 'a|b'`): faster and cheaper on big repos, but misses code
   that uses other words.

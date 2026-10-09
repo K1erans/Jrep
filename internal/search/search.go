@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -74,9 +75,9 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 	states := make([]jev.State, len(chunks))
 	var all []cache.Key
 	for c, ch := range chunks {
-		states[c] = jev.State{Path: ch.Rel, Code: ch.Code}
-		sent, err := json.Marshal(states[c])
-		if err != nil {
+		var sent []byte
+		var err error
+		if states[c], sent, err = stateOf(ch); err != nil {
 			return nil, err
 		}
 		scores[c] = make([]float64, len(questions))
@@ -139,6 +140,56 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 		results[q] = rank(question, chunks, scores, q, opts)
 	}
 	return results, nil
+}
+
+// stateOf is what Jev is shown about a chunk, and its encoding for cache
+// keys.
+func stateOf(ch Chunk) (jev.State, []byte, error) {
+	s := jev.State{Path: ch.Rel, Code: ch.Code}
+	b, err := json.Marshal(s)
+	return s, b, err
+}
+
+// ErrNotAsked means no chunk has a cached answer for the question.
+var ErrNotAsked = errors.New("no cached answers")
+
+// Narrow keeps the n chunks that scored best for an earlier question, in
+// their original order, reading only cached answers. It makes retrying a
+// reworded question cheap: replaying 24 rewordings of 12 tasks, the right
+// chunk was always in the earlier question's top 11, and asking the new
+// wording about only those ranked it as well as a full scan did. Chunks
+// with no cached answer are left out: the earlier search never saw them.
+func Narrow(chunks []Chunk, store cache.Cache, model, question string, n int) ([]Chunk, error) {
+	instruction := jev.Instruction(question)
+	keys := make([]cache.Key, len(chunks))
+	for i, ch := range chunks {
+		_, sent, err := stateOf(ch)
+		if err != nil {
+			return nil, err
+		}
+		keys[i] = cache.KeyOf(model, instruction, sent)
+	}
+	hits, err := store.Get(keys)
+	if err != nil {
+		return nil, fmt.Errorf("reading cache: %w", err)
+	}
+	var answered []int
+	for i, k := range keys {
+		if _, ok := hits[k]; ok {
+			answered = append(answered, i)
+		}
+	}
+	if len(answered) == 0 {
+		return nil, ErrNotAsked
+	}
+	slices.SortStableFunc(answered, func(a, b int) int { return cmp.Compare(hits[keys[b]], hits[keys[a]]) })
+	answered = answered[:min(n, len(answered))]
+	slices.Sort(answered)
+	kept := make([]Chunk, len(answered))
+	for j, i := range answered {
+		kept[j] = chunks[i]
+	}
+	return kept, nil
 }
 
 // parallel runs fn over tasks with n workers and stops at the first error.

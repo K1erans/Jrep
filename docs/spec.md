@@ -70,6 +70,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 46. As a developer, I want clear errors for a bad key or a rejected request, so that I can fix setup quickly.
 47. As a developer, I want Ctrl-C to stop a search promptly and keep the answers saved so far, so that interrupting costs nothing extra.
 48. As a coding agent, I want a short AGENTS.md / CLAUDE.md snippet explaining how and when to use jrep, so that I use it well with no other instructions.
+49. As a coding agent, I want to retry a reworded question over only the chunks that best matched my earlier question, so that rephrasing after a miss costs a tenth of a new scan.
 
 ## Implementation Decisions
 

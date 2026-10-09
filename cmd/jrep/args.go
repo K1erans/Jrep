@@ -18,6 +18,8 @@ Prints matching line ranges, best first. Exit status: 0 match, 1 no match, 2 err
   -q "question"          extra question, repeatable; answered in the same Jev calls
   -s                     keyword pre-pass first, fewer chunks sent to Jev
   --keywords 'a|b|c'     regex for the -s pre-pass (default: words from the question)
+  --refine "earlier"     retry a reworded question cheaply: search only the 300 chunks
+                         that best matched an earlier question (its answers are cached)
   --threshold 0.6        minimum probability to count as a match
   --top 10               maximum results per question (0 = no limit)
   --json                 one JSON object per match
@@ -47,6 +49,7 @@ type config struct {
 	Paths       []string
 	Prepass     bool
 	Keywords    string
+	Refine      string
 	Threshold   float64
 	Top         int
 	JSON        bool
@@ -119,6 +122,7 @@ func parseArgs(args []string) (config, error) {
 	fs.Var(&extra, "q", "")
 	fs.BoolVar(&cfg.Prepass, "s", false, "")
 	fs.StringVar(&cfg.Keywords, "keywords", "", "")
+	fs.StringVar(&cfg.Refine, "refine", "", "")
 	fs.Float64Var(&cfg.Threshold, "threshold", cfg.Threshold, "")
 	fs.IntVar(&cfg.Top, "top", cfg.Top, "")
 	fs.BoolVar(&cfg.JSON, "json", false, "")
@@ -174,6 +178,16 @@ func parseArgs(args []string) (config, error) {
 	}
 	if cfg.Top < 0 {
 		return cfg, fmt.Errorf("--top must be 0 or more, got %d", cfg.Top)
+	}
+	refine := false
+	fs.Visit(func(f *flag.Flag) { refine = refine || f.Name == "refine" })
+	if refine {
+		if strings.TrimSpace(cfg.Refine) == "" {
+			return cfg, errors.New("empty --refine question")
+		}
+		if cfg.NoCache {
+			return cfg, errors.New("--refine reads cached answers for the earlier question; drop --no-cache")
+		}
 	}
 	if cfg.Keywords != "" {
 		// Without -s every chunk goes to Jev; say so rather than filter.

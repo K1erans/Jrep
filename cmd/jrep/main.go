@@ -30,6 +30,12 @@ const (
 // maxListed caps how many skipped files are named on stderr.
 const maxListed = 10
 
+// refineTop is how many chunks --refine searches. Replaying 24 rewordings
+// of 12 miniflux tasks, the right chunk was always in the earlier
+// question's top 11 and kept its rank with only the top 30 searched; 300
+// leaves room for bigger repos at about 9% of that 3,400-chunk scan.
+const refineTop = 300
+
 // app holds what main wires up for real and tests replace.
 type app struct {
 	stdout, stderr io.Writer
@@ -175,6 +181,16 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 			fmt.Fprintf(a.stderr, "jrep: -s kept 0 of %d chunks (keywords: %s)\n", len(chunks), f.Pattern())
 		}
 		chunks = kept
+	}
+	if cfg.Refine != "" {
+		chunks, err = search.Narrow(chunks, store, cfg.Model, cfg.Refine, refineTop)
+		if errors.Is(err, search.ErrNotAsked) {
+			return exitError, fmt.Errorf("--refine: no cached answers for %q: ask it first, over the same files, or drop --refine", cfg.Refine)
+		}
+		if err != nil {
+			return exitError, fmt.Errorf("--refine: %w", err)
+		}
+		fmt.Fprintf(a.stderr, "jrep: --refine: searching the %d %s that best matched %q\n", len(chunks), plural(len(chunks), "chunk", "chunks"), cfg.Refine)
 	}
 
 	client, err := a.client()
