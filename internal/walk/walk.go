@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -31,6 +32,11 @@ type File struct {
 	Path string // as shown to the user, relative to the working directory
 	Rel  string // slash path from the repo root; stable across working directories
 	Size int64
+
+	// Src is the file's content, read while checking it is text, so it
+	// isn't opened twice. Walk fills it for Result.Files only; nil means
+	// read it from Path.
+	Src []byte
 }
 
 type Result struct {
@@ -64,10 +70,16 @@ func Walk(paths []string, opts Options) (Result, error) {
 	// found is one file under the named path base. Only the part of its
 	// path below base is checked for tests, generated files, translations
 	// and docs, so naming such a file or folder searches it.
-	type found struct{ display, below string }
+	type found struct {
+		display, rel string
+		test, doc    bool // would be skipped as a test or doc, unless included
+	}
 	var list []found
 	seen := map[string]bool{}
-	add := func(display, base string) {
+	// baseRel is base's path from the root. Resolving it once per named
+	// path, not once per file, saves a stat of every folder on the way to
+	// every file.
+	add := func(display, base, baseRel string) {
 		display = filepath.Clean(display)
 		if seen[display] {
 			return
@@ -89,15 +101,21 @@ func Walk(paths []string, opts Options) (Result, error) {
 			res.Translations++
 			return
 		}
-		list = append(list, found{display, below})
+		list = append(list, found{
+			display: display,
+			rel:     path.Join(baseRel, below),
+			test:    !opts.Tests && IsTest(below),
+			doc:     !opts.Docs && IsDoc(below),
+		})
 	}
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
 			return res, err
 		}
+		baseRel := relTo(root, p)
 		if !info.IsDir() {
-			add(p, p)
+			add(p, p, baseRel)
 			continue
 		}
 		var names []string
@@ -110,12 +128,13 @@ func Walk(paths []string, opts Options) (Result, error) {
 			return res, err
 		}
 		for _, n := range names {
-			add(n, p)
+			add(n, p, baseRel)
 		}
 	}
 
 	// Opening every file to check it is text is most of a walk's time, and
-	// spends it waiting on the file system, so it runs in parallel.
+	// spends it waiting on the file system, so it runs in parallel. Files
+	// that will be searched are read whole while open.
 	files := make([]File, len(list))
 	isText := make([]bool, len(list))
 	errs := make([]error, len(list))
@@ -126,10 +145,9 @@ func Walk(paths []string, opts Options) (Result, error) {
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				files[i], isText[i], errs[i] = inspect(list[i].display)
-				if isText[i] {
-					files[i].Rel = relTo(root, list[i].display)
-				}
+				c := list[i]
+				files[i], isText[i], errs[i] = inspect(c.display, !c.test && !c.doc, opts.MaxFileSize)
+				files[i].Rel = c.rel
 			}
 		}()
 	}
@@ -148,14 +166,14 @@ func Walk(paths []string, opts Options) (Result, error) {
 		}
 		f := files[i]
 		switch {
-		case !opts.Tests && IsTest(c.below):
+		case c.test:
 			res.Tests++
 			continue
-		case !opts.Docs && IsDoc(c.below):
+		case c.doc:
 			res.Docs++
 			continue
 		}
-		if f.Size > opts.MaxFileSize && opts.MaxFileSize > 0 {
+		if oversize(f.Size, opts.MaxFileSize) {
 			res.Oversize = append(res.Oversize, f)
 		} else {
 			res.Files = append(res.Files, f)
@@ -289,8 +307,12 @@ func walkDir(dir string, ignore bool) ([]string, error) {
 	return files, err
 }
 
+func oversize(size, limit int64) bool { return limit > 0 && size > limit }
+
 // inspect stats a file and reports whether it is a searchable text file.
-func inspect(path string) (File, bool, error) {
+// With read set, a text file within maxSize (0 = no limit) is read whole
+// into Src.
+func inspect(path string, read bool, maxSize int64) (File, bool, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return File{}, false, nil // e.g. tracked by git but deleted
@@ -306,7 +328,9 @@ func inspect(path string) (File, bool, error) {
 		return File{}, false, err
 	}
 	defer fh.Close()
-	head := make([]byte, binarySniffLen)
+	// A small file fits the head with a byte to spare, which shows it
+	// hasn't grown since Stat, so the head is its whole content.
+	head := make([]byte, min(binarySniffLen, info.Size()+1))
 	n, err := io.ReadFull(fh, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return File{}, false, err
@@ -314,7 +338,18 @@ func inspect(path string) (File, bool, error) {
 	if bytes.IndexByte(head[:n], 0) >= 0 {
 		return File{}, false, nil
 	}
-	return File{Path: path, Size: info.Size()}, true, nil
+	f := File{Path: path, Size: info.Size()}
+	if read && !oversize(f.Size, maxSize) {
+		buf := bytes.NewBuffer(head[:n])
+		if n == len(head) {
+			buf.Grow(max(0, int(f.Size)-n) + bytes.MinRead)
+			if _, err := buf.ReadFrom(fh); err != nil {
+				return File{}, false, err
+			}
+		}
+		f.Src = buf.Bytes()
+	}
+	return f, true, nil
 }
 
 func relTo(root, path string) string {

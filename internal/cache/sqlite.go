@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -183,10 +185,14 @@ func (c *SQLite) GetChunks(keys []Key) (map[Key][]byte, error) {
 }
 
 // lookup reads column for keys from table in batches, refreshing last_used
-// on rows that haven't been touched for a day.
+// on rows that haven't been touched for a day. Keys are looked up in order,
+// so each batch reads one narrow run of the index instead of pages from
+// all over it.
 func lookup[V any](c *SQLite, table, column string, keys []Key) (map[Key]V, error) {
 	out := make(map[Key]V, len(keys))
 	t := now().Unix()
+	keys = slices.Clone(keys)
+	slices.SortFunc(keys, func(a, b Key) int { return bytes.Compare(a[:], b[:]) })
 	for len(keys) > 0 {
 		batch := keys[:min(lookupBatch, len(keys))]
 		keys = keys[len(batch):]

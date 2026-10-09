@@ -30,21 +30,25 @@ type LoadOptions struct {
 	OnCacheError func(error)
 }
 
-// Load reads and chunks files in parallel, keeping file order. A file that
-// vanished since it was listed is skipped.
+// Load reads (unless the walk already did) and chunks files in parallel,
+// keeping file order. A file that vanished since it was listed is skipped.
 func Load(files []walk.File, opts LoadOptions) ([]Chunk, error) {
 	srcs := make([][]byte, len(files))
 	keys := make([]cache.Key, len(files))
 	errs := make([]error, len(files))
 	version := layoutVersion(opts.Chunk)
 	each(len(files), func(i int) {
-		src, err := os.ReadFile(files[i].Path)
-		if errors.Is(err, fs.ErrNotExist) {
-			return
-		}
-		if err != nil {
-			errs[i] = err
-			return
+		src := files[i].Src
+		if src == nil {
+			var err error
+			src, err = os.ReadFile(files[i].Path)
+			if errors.Is(err, fs.ErrNotExist) {
+				return
+			}
+			if err != nil {
+				errs[i] = err
+				return
+			}
 		}
 		srcs[i] = src
 		// The name picks the grammar, so it is part of the key.

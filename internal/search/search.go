@@ -72,23 +72,18 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 		instructions[i] = jev.Instruction(q)
 	}
 
-	// scores[c][q] is chunk c's probability for question q.
+	states, all, err := keyAll(chunks, opts.Model, instructions)
+	if err != nil {
+		return nil, err
+	}
+	// scores[c][q] is chunk c's probability for question q, and keys[c][q]
+	// its cache key.
 	scores := make([][]float64, len(chunks))
 	keys := make([][]cache.Key, len(chunks))
-	states := make([]jev.State, len(chunks))
-	var all []cache.Key
-	for c, ch := range chunks {
-		var sent []byte
-		var err error
-		if states[c], sent, err = stateOf(ch); err != nil {
-			return nil, err
-		}
-		scores[c] = make([]float64, len(questions))
-		keys[c] = make([]cache.Key, len(questions))
-		for q := range questions {
-			keys[c][q] = cache.KeyOf(opts.Model, instructions[q], sent)
-			all = append(all, keys[c][q])
-		}
+	flat := make([]float64, len(all))
+	for c := range chunks {
+		scores[c] = flat[c*len(questions) : (c+1)*len(questions)]
+		keys[c] = all[c*len(questions) : (c+1)*len(questions)]
 	}
 
 	hits := map[cache.Key]float64{}
@@ -156,6 +151,25 @@ func stateOf(ch Chunk) (jev.State, []byte, error) {
 	return s, b, err
 }
 
+// keyAll builds every chunk's state and its cache key for each
+// instruction, keys[c*len(instructions)+q], one worker per CPU: hashing
+// every chunk once per question is most of a cached search's time.
+func keyAll(chunks []Chunk, model string, instructions []string) ([]jev.State, []cache.Key, error) {
+	states := make([]jev.State, len(chunks))
+	keys := make([]cache.Key, len(chunks)*len(instructions))
+	errs := make([]error, len(chunks))
+	each(len(chunks), func(c int) {
+		var sent []byte
+		if states[c], sent, errs[c] = stateOf(chunks[c]); errs[c] != nil {
+			return
+		}
+		for q, in := range instructions {
+			keys[c*len(instructions)+q] = cache.KeyOf(model, in, sent)
+		}
+	})
+	return states, keys, errors.Join(errs...)
+}
+
 // ErrNotAsked means no chunk has a cached answer for the question.
 var ErrNotAsked = errors.New("no cached answers")
 
@@ -166,14 +180,9 @@ var ErrNotAsked = errors.New("no cached answers")
 // wording about only those ranked it as well as a full scan did. Chunks
 // with no cached answer are left out: the earlier search never saw them.
 func Narrow(chunks []Chunk, store cache.Cache, model, question string, n int) ([]Chunk, error) {
-	instruction := jev.Instruction(question)
-	keys := make([]cache.Key, len(chunks))
-	for i, ch := range chunks {
-		_, sent, err := stateOf(ch)
-		if err != nil {
-			return nil, err
-		}
-		keys[i] = cache.KeyOf(model, instruction, sent)
+	_, keys, err := keyAll(chunks, model, []string{jev.Instruction(question)})
+	if err != nil {
+		return nil, err
 	}
 	hits, err := store.Get(keys)
 	if err != nil {
@@ -228,28 +237,37 @@ feed:
 	return context.Cause(ctx)
 }
 
+// rank sorts only the chunks at or above the threshold, usually a handful,
+// and finds the best of the rest in one pass.
 func rank(question string, chunks []Chunk, scores [][]float64, q int, opts Options) Result {
-	all := make([]Match, len(chunks))
-	for c, ch := range chunks {
-		all[c] = Match{Path: ch.Path, Start: ch.Start, End: ch.End, Signature: ch.Signature, Probability: scores[c][q]}
+	match := func(c int) Match {
+		ch := chunks[c]
+		return Match{Path: ch.Path, Start: ch.Start, End: ch.End, Signature: ch.Signature, Probability: scores[c][q]}
 	}
-	slices.SortStableFunc(all, func(a, b Match) int {
+	better := func(a, b Match) int {
 		return cmp.Or(
 			cmp.Compare(b.Probability, a.Probability),
 			cmp.Compare(a.Path, b.Path),
 			cmp.Compare(a.Start, b.Start),
 		)
-	})
-	res := Result{Question: question}
-	if len(all) > 0 {
-		best := all[0]
-		res.Best = &best
 	}
-	for _, m := range all {
-		if m.Probability < opts.Threshold || (opts.Top > 0 && len(res.Matches) == opts.Top) {
-			break
+	res := Result{Question: question}
+	best := -1
+	for c := range chunks {
+		if best < 0 || better(match(c), match(best)) < 0 {
+			best = c
 		}
-		res.Matches = append(res.Matches, m)
+		if scores[c][q] >= opts.Threshold {
+			res.Matches = append(res.Matches, match(c))
+		}
+	}
+	if best >= 0 {
+		m := match(best)
+		res.Best = &m
+	}
+	slices.SortStableFunc(res.Matches, better)
+	if opts.Top > 0 && len(res.Matches) > opts.Top {
+		res.Matches = res.Matches[:opts.Top]
 	}
 	return res
 }

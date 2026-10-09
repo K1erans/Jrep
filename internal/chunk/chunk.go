@@ -150,8 +150,7 @@ func (s splitter) treePieces(filename string, src []byte) (pieces []piece, ok bo
 // inner piece so a method's signature stays with its first lines.
 func (s splitter) candidates(bt *gotreesitter.BoundTree, node *gotreesitter.Node, enclosing string) []candidate {
 	var out []candidate
-	for i := 0; i < node.NamedChildCount(); i++ {
-		c := node.NamedChild(i)
+	for _, c := range namedChildren(node) {
 		typ := bt.NodeType(c)
 		start, end := int(c.StartPoint().Row), int(c.EndPoint().Row)
 		if end >= len(s.lines) {
@@ -165,7 +164,7 @@ func (s splitter) candidates(bt *gotreesitter.BoundTree, node *gotreesitter.Node
 		if k != rankDef && enclosing != "" {
 			k = rankOther
 		}
-		if s.tooBig(start, end) && c.NamedChildCount() > 0 {
+		if s.tooBig(start, end) && slices.ContainsFunc(c.Children(), (*gotreesitter.Node).IsNamed) {
 			// Non-definitions on the header row (names, parameters) are
 			// part of the header, which joins the first body candidate.
 			var body []candidate
@@ -186,6 +185,19 @@ func (s splitter) candidates(bt *gotreesitter.BoundTree, node *gotreesitter.Node
 		out = append(out, candidate{row: start, sig: sig, rank: k, comment: strings.Contains(typ, "comment")})
 	}
 	return firstPerRow(out)
+}
+
+// namedChildren lists node's named children. NamedChild(i) and
+// NamedChildCount count from the first child on every call, so looping over
+// them is quadratic: a 3 MB file holding one long literal took 7 minutes.
+func namedChildren(node *gotreesitter.Node) []*gotreesitter.Node {
+	var out []*gotreesitter.Node
+	for _, c := range node.Children() {
+		if c.IsNamed() {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // firstPerRow keeps the first candidate on each row, e.g. a function rather
