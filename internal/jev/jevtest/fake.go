@@ -9,8 +9,8 @@ import (
 	"jrep/internal/jev"
 )
 
-// Fake answers each question with Score(state, question), where question
-// is the original search text with the instruction prefix removed.
+// Fake answers each question about each chunk with Score(state, question),
+// where state is the chunk as it would be sent alone.
 type Fake struct {
 	Score func(state jev.State, question string) float64
 	Err   error // returned by every call when set
@@ -30,8 +30,12 @@ func (f *Fake) Ask(ctx context.Context, req jev.Request) (jev.Response, error) {
 		return jev.Response{}, f.Err
 	}
 	resp := jev.Response{Model: req.Model}
-	for _, q := range req.Questions {
-		resp.Nouls = append(resp.Nouls, f.Score(req.State, strings.TrimPrefix(q, jev.Instruction(""))))
+	for _, c := range req.Chunks {
+		nouls := make([]float64, len(c.Questions))
+		for i, q := range c.Questions {
+			nouls[i] = f.Score(jev.State{Path: req.Path, Code: c.Code}, q)
+		}
+		resp.Nouls = append(resp.Nouls, nouls)
 	}
 	return resp, nil
 }

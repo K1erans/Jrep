@@ -16,6 +16,13 @@ import (
 	"jrep/internal/jev"
 )
 
+// packBytes caps the code sent in one Jev call. A file's chunks share
+// calls up to this size, since every call costs ~240 tokens before its
+// code; on miniflux that cut a scan's tokens by about a third. It is half
+// a chunk's own limit (chunk.Default.MaxBytes), well inside Jev's 32K
+// tokens; a bigger chunk goes alone.
+const packBytes = 24 << 10
+
 // DefaultWorkers is how many Jev calls may be in flight: enough for the
 // client's 320 requests/s ceiling at ~250 ms a call. The client's rate
 // limiter, not this number, keeps calls inside TypeSafe's limits.
@@ -58,7 +65,6 @@ type Result struct {
 // task is one chunk and the questions still unanswered for it.
 type task struct {
 	chunk   int
-	state   jev.State
 	missing []int // indexes into questions
 }
 
@@ -72,7 +78,7 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 		instructions[i] = jev.Instruction(q)
 	}
 
-	states, all, err := keyAll(chunks, opts.Model, instructions)
+	all, err := keyAll(chunks, opts.Model, instructions)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +101,7 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 	}
 	var tasks []task
 	for c := range chunks {
-		t := task{chunk: c, state: states[c]}
+		t := task{chunk: c}
 		for q := range questions {
 			if v, ok := hits[keys[c][q]]; ok {
 				scores[c][q] = v
@@ -108,23 +114,36 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 		}
 	}
 
-	ask := func(ctx context.Context, t task) error {
-		req := jev.Request{Model: opts.Model, State: t.state}
-		for _, q := range t.missing {
-			req.Questions = append(req.Questions, instructions[q])
+	// Each answer is cached under its own chunk's key, as if the chunk had
+	// been sent alone, so editing one function re-asks only that function
+	// and a chunk's answers don't depend on which others shared its call.
+	ask := func(ctx context.Context, pack []task) error {
+		first, last := chunks[pack[0].chunk], chunks[pack[len(pack)-1].chunk]
+		req := jev.Request{Model: opts.Model, Path: first.Rel}
+		for _, t := range pack {
+			c := jev.Chunk{Code: chunks[t.chunk].Code}
+			for _, q := range t.missing {
+				c.Questions = append(c.Questions, questions[q])
+			}
+			req.Chunks = append(req.Chunks, c)
 		}
-		ch := chunks[t.chunk]
 		resp, err := client.Ask(ctx, req)
 		if err != nil {
-			return fmt.Errorf("%s:%d-%d: %w", ch.Path, ch.Start, ch.End, err)
+			return fmt.Errorf("%s:%d-%d: %w", first.Path, first.Start, last.End, err)
 		}
-		if len(resp.Nouls) != len(t.missing) {
-			return fmt.Errorf("%s:%d-%d: got %d answers for %d questions", ch.Path, ch.Start, ch.End, len(resp.Nouls), len(t.missing))
+		if len(resp.Nouls) != len(pack) {
+			return fmt.Errorf("%s:%d-%d: got answers for %d chunks, asked about %d", first.Path, first.Start, last.End, len(resp.Nouls), len(pack))
 		}
-		for i, q := range t.missing {
-			scores[t.chunk][q] = resp.Nouls[i]
-			if err := store.Put(keys[t.chunk][q], resp.Nouls[i]); err != nil && opts.OnCacheError != nil {
-				opts.OnCacheError(err)
+		for i, t := range pack {
+			if len(resp.Nouls[i]) != len(t.missing) {
+				ch := chunks[t.chunk]
+				return fmt.Errorf("%s:%d-%d: got %d answers for %d questions", ch.Path, ch.Start, ch.End, len(resp.Nouls[i]), len(t.missing))
+			}
+			for j, q := range t.missing {
+				scores[t.chunk][q] = resp.Nouls[i][j]
+				if err := store.Put(keys[t.chunk][q], resp.Nouls[i][j]); err != nil && opts.OnCacheError != nil {
+					opts.OnCacheError(err)
+				}
 			}
 		}
 		return nil
@@ -132,7 +151,7 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 	if len(tasks) > 0 && opts.OnAsk != nil {
 		opts.OnAsk(len(tasks))
 	}
-	if err := parallel(ctx, tasks, cmp.Or(opts.Workers, DefaultWorkers), ask); err != nil {
+	if err := parallel(ctx, packs(chunks, tasks), cmp.Or(opts.Workers, DefaultWorkers), ask); err != nil {
 		return nil, err
 	}
 
@@ -143,31 +162,48 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 	return results, nil
 }
 
-// stateOf is what Jev is shown about a chunk, and its encoding for cache
-// keys.
-func stateOf(ch Chunk) (jev.State, []byte, error) {
-	s := jev.State{Path: ch.Rel, Code: ch.Code}
-	b, err := json.Marshal(s)
-	return s, b, err
+// packs groups tasks into Jev calls: neighbouring chunks of one file, up
+// to packBytes of code. Chunks are in file order, so a file's chunks are
+// neighbours.
+func packs(chunks []Chunk, tasks []task) [][]task {
+	var out [][]task
+	size := 0
+	for _, t := range tasks {
+		c := chunks[t.chunk]
+		if n := len(out); n > 0 && chunks[out[n-1][0].chunk].Path == c.Path && size+len(c.Code) <= packBytes {
+			out[n-1] = append(out[n-1], t)
+			size += len(c.Code)
+			continue
+		}
+		out = append(out, []task{t})
+		size = len(c.Code)
+	}
+	return out
 }
 
-// keyAll builds every chunk's state and its cache key for each
-// instruction, keys[c*len(instructions)+q], one worker per CPU: hashing
-// every chunk once per question is most of a cached search's time.
-func keyAll(chunks []Chunk, model string, instructions []string) ([]jev.State, []cache.Key, error) {
-	states := make([]jev.State, len(chunks))
+// stateOf encodes a chunk as Jev would be shown it alone, for its cache
+// keys.
+func stateOf(ch Chunk) ([]byte, error) {
+	return json.Marshal(jev.State{Path: ch.Rel, Code: ch.Code})
+}
+
+// keyAll builds every chunk's cache key for each instruction,
+// keys[c*len(instructions)+q], one worker per CPU: hashing every chunk once
+// per question is most of a cached search's time.
+func keyAll(chunks []Chunk, model string, instructions []string) ([]cache.Key, error) {
 	keys := make([]cache.Key, len(chunks)*len(instructions))
 	errs := make([]error, len(chunks))
 	each(len(chunks), func(c int) {
-		var sent []byte
-		if states[c], sent, errs[c] = stateOf(chunks[c]); errs[c] != nil {
+		sent, err := stateOf(chunks[c])
+		if err != nil {
+			errs[c] = err
 			return
 		}
 		for q, in := range instructions {
 			keys[c*len(instructions)+q] = cache.KeyOf(model, in, sent)
 		}
 	})
-	return states, keys, errors.Join(errs...)
+	return keys, errors.Join(errs...)
 }
 
 // ErrNotAsked means no chunk has a cached answer for the question.
@@ -180,7 +216,7 @@ var ErrNotAsked = errors.New("no cached answers")
 // wording about only those ranked it as well as a full scan did. Chunks
 // with no cached answer are left out: the earlier search never saw them.
 func Narrow(chunks []Chunk, store cache.Cache, model, question string, n int) ([]Chunk, error) {
-	_, keys, err := keyAll(chunks, model, []string{jev.Instruction(question)})
+	keys, err := keyAll(chunks, model, []string{jev.Instruction(question)})
 	if err != nil {
 		return nil, err
 	}
@@ -207,13 +243,13 @@ func Narrow(chunks []Chunk, store cache.Cache, model, question string, n int) ([
 	return kept, nil
 }
 
-// parallel runs fn over tasks with n workers and stops at the first error.
-func parallel(ctx context.Context, tasks []task, n int, fn func(context.Context, task) error) error {
+// parallel runs fn over items with n workers and stops at the first error.
+func parallel[T any](ctx context.Context, items []T, n int, fn func(context.Context, T) error) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	work := make(chan task)
+	work := make(chan T)
 	var wg sync.WaitGroup
-	for range min(n, len(tasks)) {
+	for range min(n, len(items)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -225,7 +261,7 @@ func parallel(ctx context.Context, tasks []task, n int, fn func(context.Context,
 		}()
 	}
 feed:
-	for _, t := range tasks {
+	for _, t := range items {
 		select {
 		case work <- t:
 		case <-ctx.Done():

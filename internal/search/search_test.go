@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"jrep/internal/cache"
@@ -72,7 +74,7 @@ func TestNoMatchStillReportsTheBestCandidate(t *testing.T) {
 	}
 }
 
-func TestAllQuestionsShareOneRequestPerChunk(t *testing.T) {
+func TestAllQuestionsShareOneRequest(t *testing.T) {
 	fake := &jevtest.Fake{Score: scores(paymentScores)}
 	res, err := Run(context.Background(), chunks(), fake, cache.NewMemory(), opts("retries failed payments", "sends email"))
 	if err != nil {
@@ -80,14 +82,14 @@ func TestAllQuestionsShareOneRequestPerChunk(t *testing.T) {
 	}
 	reqs := fake.Requests()
 	if len(reqs) != 3 {
-		t.Fatalf("want one request per chunk, got %d", len(reqs))
+		t.Fatalf("want one request per file, got %d", len(reqs))
 	}
 	for _, r := range reqs {
-		if len(r.Questions) != 2 || r.Model != "jev-1.13.0" {
+		if len(r.Chunks) != 1 || len(r.Chunks[0].Questions) != 2 || r.Model != "jev-1.13.0" {
 			t.Fatalf("request %+v", r)
 		}
-		if r.State.Path == "app/src/retry.ts" && r.State.Code != "retry payment" {
-			t.Fatalf("state should carry the repo path and code: %+v", r.State)
+		if r.Path == "app/src/retry.ts" && r.Chunks[0].Code != "retry payment" {
+			t.Fatalf("the request should carry the repo path and code: %+v", r)
 		}
 	}
 	if res[1].Question != "sends email" || len(res[1].Matches) != 1 || res[1].Matches[0].Path != "src/worker.ts" {
@@ -136,8 +138,8 @@ func TestOnlyUncachedQuestionsAreAsked(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range fake2.Requests() {
-		if !reflect.DeepEqual(r.Questions, []string{jev.Instruction("sends email")}) {
-			t.Fatalf("only the new question should be sent, got %q", r.Questions)
+		if q := r.Chunks[0].Questions; !reflect.DeepEqual(q, []string{"sends email"}) {
+			t.Fatalf("only the new question should be sent, got %q", q)
 		}
 	}
 }
@@ -148,7 +150,7 @@ type failOn struct {
 }
 
 func (f failOn) Ask(ctx context.Context, r jev.Request) (jev.Response, error) {
-	if r.State.Path == f.path {
+	if r.Path == f.path {
 		return jev.Response{}, errors.New("boom")
 	}
 	return f.Client.Ask(ctx, r)
@@ -179,8 +181,59 @@ func TestDuplicateQuestionsAreAskedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res) != 1 || len(fake.Requests()[0].Questions) != 1 {
-		t.Fatalf("got %d results, %d questions", len(res), len(fake.Requests()[0].Questions))
+	if q := fake.Requests()[0].Chunks[0].Questions; len(res) != 1 || len(q) != 1 {
+		t.Fatalf("got %d results, %d questions", len(res), len(q))
+	}
+}
+
+// fileChunks are three chunks of one file and one of another.
+func fileChunks() []Chunk {
+	c := func(path string, start int, code string) Chunk {
+		return Chunk{Path: path, Rel: "app/" + path, Chunk: chunk.Chunk{Start: start, End: start + 9, Code: code}}
+	}
+	return []Chunk{c("src/pay.ts", 1, "retry payment"), c("src/pay.ts", 11, "refund"), c("src/pay.ts", 21, "invoice"), c("src/http.ts", 1, "http")}
+}
+
+func TestChunksOfAFileShareARequestButAreCachedOneByOne(t *testing.T) {
+	store := cache.NewMemory()
+	fake := &jevtest.Fake{Score: jevtest.Contains(map[string]string{"retries failed payments": "retry"})}
+	res, err := Run(context.Background(), fileChunks(), fake, store, opts("retries failed payments"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 2 || reqs[0].Path != "app/src/pay.ts" || len(reqs[0].Chunks) != 3 || reqs[0].Chunks[1].Code != "refund" || len(reqs[1].Chunks) != 1 {
+		t.Fatalf("want the three pay.ts chunks in one request and http.ts in another, got %+v", reqs)
+	}
+	if m := res[0].Matches; len(m) != 1 || m[0].Start != 1 || m[0].Probability != 0.9 {
+		t.Fatalf("each chunk keeps its own answer: %+v", m)
+	}
+
+	// Editing one chunk re-asks only that chunk, alone.
+	edited := fileChunks()
+	edited[1].Code = "refund twice"
+	again := &jevtest.Fake{Score: fake.Score}
+	if _, err := Run(context.Background(), edited, again, store, opts("retries failed payments")); err != nil {
+		t.Fatal(err)
+	}
+	if reqs := again.Requests(); len(reqs) != 1 || len(reqs[0].Chunks) != 1 || reqs[0].Chunks[0].Code != "refund twice" {
+		t.Fatalf("want only the edited chunk asked, got %+v", reqs)
+	}
+}
+
+func TestAPackStaysUnderItsSizeCap(t *testing.T) {
+	big := strings.Repeat("x", packBytes/2)
+	cs := fileChunks()[:3]
+	for i := range cs {
+		cs[i].Code = big + strconv.Itoa(i)
+	}
+	fake := &jevtest.Fake{Score: scores(paymentScores)}
+	if _, err := Run(context.Background(), cs, fake, cache.NewMemory(), opts("retries failed payments")); err != nil {
+		t.Fatal(err)
+	}
+	// Two halves and change don't fit together, so each goes alone.
+	if n := len(fake.Requests()); n != 3 {
+		t.Fatalf("want 3 requests, got %d", n)
 	}
 }
 

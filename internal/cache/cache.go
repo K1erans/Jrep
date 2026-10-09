@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// Key is a sha256 (see Hash): of model + question + state as sent for an
+// Key is a sha256 (see Hash): of model + question + chunk as sent alone for an
 // answer, or of the splitter's version + file name + content for a layout.
 type Key [32]byte
 
@@ -23,7 +23,8 @@ type Cache interface {
 	PutChunks(layouts map[Key][]byte) error
 }
 
-// KeyOf hashes exactly what is sent to Jev. The question is lowercased and
+// KeyOf hashes exactly what Jev is asked about one chunk, as if it were
+// sent alone, even when it shared a call with others. The question is lowercased and
 // its white space collapsed first, so trivially different spellings share
 // answers. Parts are length-prefixed so they can't run into each other.
 func KeyOf(model, question string, state []byte) Key {

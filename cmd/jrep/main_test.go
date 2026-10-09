@@ -215,7 +215,7 @@ func TestPrepassSendsOnlyChunksWithKeywords(t *testing.T) {
 		t.Fatalf("exit %d, %s", code, h.errOut.String())
 	}
 	reqs := fake.Requests()
-	if len(reqs) != 1 || reqs[0].State.Path != "src/billing/retry.go" {
+	if len(reqs) != 1 || reqs[0].Path != "src/billing/retry.go" {
 		t.Fatalf("only the chunk mentioning the keywords should be sent, got %d requests", len(reqs))
 	}
 
@@ -236,7 +236,7 @@ func TestRefineAsksOnlyAboutChunksThatMatchedTheEarlierQuestion(t *testing.T) {
 		t.Fatalf("exit %d, stderr %s", code, h.errOut.String())
 	}
 	reqs := fake.Requests()[1:]
-	if len(reqs) != 1 || reqs[0].State.Path != "src/billing/retry.go" {
+	if len(reqs) != 1 || reqs[0].Path != "src/billing/retry.go" {
 		t.Fatalf("only chunks answered for the earlier question should be sent, got %d requests", len(reqs))
 	}
 	if want := "jrep: --refine: searching the 1 chunk that best matched \"retries failed payments\"\njrep: asking Jev about 1 chunk\n"; h.errOut.String() != want {
@@ -338,7 +338,7 @@ func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	for _, r := range fake.Requests() {
-		if strings.HasSuffix(r.State.Path, "_test.go") {
+		if strings.HasSuffix(r.Path, "_test.go") {
 			t.Fatal("test files aren't sent by default")
 		}
 	}
@@ -450,8 +450,8 @@ func TestDocsAndGeneratedFilesAreLeftOutAndReported(t *testing.T) {
 		t.Fatalf("exit %d, %s", code, h.errOut.String())
 	}
 	for _, r := range fake.Requests() {
-		if r.State.Path == "README.md" || r.State.Path == "package-lock.json" {
-			t.Fatalf("%s isn't sent by default", r.State.Path)
+		if r.Path == "README.md" || r.Path == "package-lock.json" {
+			t.Fatalf("%s isn't sent by default", r.Path)
 		}
 	}
 	want := "jrep: 1 generated file not searched (lockfiles, source maps, minified, SVG, node_modules; name it to include)\n" +

@@ -15,12 +15,16 @@ import (
 )
 
 var req = Request{
-	Model: "jev-1.13.0",
-	State: State{Path: "src/retry.ts", Code: "retry()"},
-	Questions: []string{
-		Instruction("retries failed payments"),
-		Instruction("sends email"),
-	},
+	Model:  "jev-1.13.0",
+	Path:   "src/retry.ts",
+	Chunks: []Chunk{{Code: "retry()", Questions: []string{"retries failed payments", "sends email"}}},
+}
+
+// withCode is req with its one chunk's code replaced.
+func withCode(code string) Request {
+	r := req
+	r.Chunks = []Chunk{{Code: code, Questions: req.Chunks[0].Questions}}
+	return r
 }
 
 // server answers with handler and counts calls.
@@ -66,8 +70,46 @@ func TestSendsTheDocumentedRequestAndReadsAnswersInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Model != "jev-1.13.0" || len(resp.Nouls) != 2 || resp.Nouls[0] != 0.94 || resp.Nouls[1] != 0.05 {
+	if resp.Model != "jev-1.13.0" || len(resp.Nouls) != 1 || len(resp.Nouls[0]) != 2 || resp.Nouls[0][0] != 0.94 || resp.Nouls[0][1] != 0.05 {
 		t.Fatalf("got %+v", resp)
+	}
+}
+
+// Packed chunks get numbered fields, in order after the path, and each
+// question names its chunk's field. Answers come back one row per chunk.
+func TestPacksChunksOfOneFileIntoOneRequest(t *testing.T) {
+	c, _ := server(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+		var body struct {
+			State     json.RawMessage `json:"state"`
+			Questions map[string]struct {
+				Instructions string `json:"instructions"`
+			} `json:"questions"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if want := `{"path":"src/pay.go","code_1":"retry()","code_2":"mail()"}`; string(body.State) != want {
+			t.Errorf("state %s", body.State)
+		}
+		want := map[string]string{
+			"q0": "The `code_1` retries failed payments",
+			"q1": "The `code_1` sends email",
+			"q2": "The `code_2` sends email",
+		}
+		for id, in := range want {
+			if body.Questions[id].Instructions != in {
+				t.Errorf("%s: %q", id, body.Questions[id].Instructions)
+			}
+		}
+		io.WriteString(w, `{"model":"jev-1.13.0","answers":{"q0":{"noul":0.9},"q1":{"noul":0.1},"q2":{"noul":0.8}}}`)
+	})
+	resp, err := c.Ask(context.Background(), Request{Model: "jev-1.13.0", Path: "src/pay.go", Chunks: []Chunk{
+		{Code: "retry()", Questions: []string{"retries failed payments", "sends email"}},
+		{Code: "mail()", Questions: []string{"sends email"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(resp.Nouls); got != `[[0.9,0.1],[0.8]]` {
+		t.Fatalf("nouls %s", got)
 	}
 }
 
@@ -154,8 +196,7 @@ func TestRequestRateIsLimited(t *testing.T) {
 
 func TestTokenRateIsLimited(t *testing.T) {
 	c, _ := server(t, func(w http.ResponseWriter, r *http.Request, _ int) { ok(w) })
-	big := req
-	big.State.Code = strings.Repeat("x", 3000) // ~1000 tokens a request
+	big := withCode(strings.Repeat("x", 3000)) // ~1000 tokens a request
 	c = NewHTTP("k", HTTPOptions{BaseURL: c.opts.BaseURL, RequestsPerSecond: 1e6, TokensPerSecond: 5000})
 	start := time.Now()
 	for range 6 {
@@ -192,9 +233,11 @@ func TestRealAPISmoke(t *testing.T) {
 		t.Skip("TYPESAFE_API_KEY not set")
 	}
 	c := NewHTTP(key, HTTPOptions{BaseURL: os.Getenv("TYPESAFE_BASE_URL")})
+	questions := []string{"retries failed payments", "parses YAML configuration files"}
 	resp, err := c.Ask(context.Background(), Request{
 		Model: "jev-1.13.0",
-		State: State{Path: "billing/retry.go", Code: `func RetryFailedPayment(inv Invoice) error {
+		Path:  "billing/retry.go",
+		Chunks: []Chunk{{Code: `func RetryFailedPayment(inv Invoice) error {
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err := charge(inv); err == nil {
 			return nil
@@ -202,22 +245,28 @@ func TestRealAPISmoke(t *testing.T) {
 		time.Sleep(time.Duration(attempt) * time.Second)
 	}
 	return ErrPaymentFailed
-}`},
-		Questions: []string{Instruction("retries failed payments"), Instruction("parses YAML configuration files")},
+}`, Questions: questions}, {Code: `func LoadConfig(path string) (*Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var c Config
+	return &c, yaml.Unmarshal(b, &c)
+}`, Questions: questions}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("model %s, nouls %v", resp.Model, resp.Nouls)
-	if !strings.HasPrefix(resp.Model, "jev-") || resp.Nouls[0] < 0.5 || resp.Nouls[1] > 0.5 {
+	n := resp.Nouls
+	if !strings.HasPrefix(resp.Model, "jev-") || n[0][0] < 0.5 || n[0][1] > 0.5 || n[1][0] > 0.5 || n[1][1] < 0.5 {
 		t.Fatalf("unexpected answers %+v", resp)
 	}
 }
 
 func TestRequestsLargerThanTheBurstAreChargedInFull(t *testing.T) {
 	c, _ := server(t, func(w http.ResponseWriter, r *http.Request, _ int) { ok(w) })
-	big := req
-	big.State.Code = strings.Repeat("x", 3000) // ~1450 tokens: 300 overhead + bytes ÷ 2.75
+	big := withCode(strings.Repeat("x", 3000)) // ~1450 tokens: 300 overhead + bytes ÷ 2.75
 	c = NewHTTP("k", HTTPOptions{BaseURL: c.opts.BaseURL, RequestsPerSecond: 1e6, TokensPerSecond: 3000})
 	start := time.Now()
 	for range 4 {

@@ -82,7 +82,7 @@ type question struct {
 
 type requestBody struct {
 	Model     string              `json:"model"`
-	State     State               `json:"state"`
+	State     json.RawMessage     `json:"state"`
 	Questions map[string]question `json:"questions"`
 }
 
@@ -128,9 +128,17 @@ func retryable(err error) bool {
 }
 
 func (c *HTTP) Ask(ctx context.Context, req Request) (Response, error) {
-	body := requestBody{Model: req.Model, State: req.State, Questions: map[string]question{}}
-	for i, q := range req.Questions {
-		body.Questions[id(i)] = question{Type: "noul", Instructions: q}
+	state, err := encodeState(req)
+	if err != nil {
+		return Response{}, err
+	}
+	body := requestBody{Model: req.Model, State: state, Questions: map[string]question{}}
+	n := 0
+	for i, ch := range req.Chunks {
+		for _, q := range ch.Questions {
+			body.Questions[id(n)] = question{Type: "noul", Instructions: instruction(field(req, i), q)}
+			n++
+		}
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -142,10 +150,10 @@ func (c *HTTP) Ask(ctx context.Context, req Request) (Response, error) {
 		if err := c.limits.wait(ctx, tokens); err != nil {
 			return Response{}, err
 		}
-		resp, err := c.post(ctx, payload, len(req.Questions))
+		model, nouls, err := c.post(ctx, payload, n)
 		if err == nil {
 			c.limits.recordSuccess()
-			return resp, nil
+			return Response{Model: model, Nouls: perChunk(req, nouls)}, nil
 		}
 		if isThrottled(err) {
 			c.limits.recordThrottle()
@@ -162,25 +170,72 @@ func (c *HTTP) Ask(ctx context.Context, req Request) (Response, error) {
 	}
 }
 
-func (c *HTTP) post(ctx context.Context, payload []byte, n int) (Response, error) {
+// field names chunk i in the state: a lone chunk is "code", exactly as it
+// was sent before packing, and packed chunks are code_1, code_2, …. Jev
+// answers each question about the field it names; on miniflux a target
+// scored the same packed among other chunks, in any position, as alone.
+func field(req Request, i int) string {
+	if len(req.Chunks) == 1 {
+		return "code"
+	}
+	return "code_" + strconv.Itoa(i+1)
+}
+
+// encodeState writes the path, then each chunk's field in order.
+func encodeState(req Request) (json.RawMessage, error) {
+	var b bytes.Buffer
+	b.WriteString(`{"path":`)
+	if err := writeJSON(&b, req.Path); err != nil {
+		return nil, err
+	}
+	for i, ch := range req.Chunks {
+		b.WriteByte(',')
+		writeJSON(&b, field(req, i))
+		b.WriteByte(':')
+		if err := writeJSON(&b, ch.Code); err != nil {
+			return nil, err
+		}
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+func writeJSON(b *bytes.Buffer, s string) error {
+	v, err := json.Marshal(s)
+	b.Write(v)
+	return err
+}
+
+// perChunk splits answers, numbered across every chunk's questions in
+// turn, into one row per chunk.
+func perChunk(req Request, nouls []float64) [][]float64 {
+	out := make([][]float64, len(req.Chunks))
+	for i, ch := range req.Chunks {
+		out[i], nouls = nouls[:len(ch.Questions):len(ch.Questions)], nouls[len(ch.Questions):]
+	}
+	return out
+}
+
+// post sends payload and reads the model and n answers, q0 to q(n-1).
+func (c *HTTP) post(ctx context.Context, payload []byte, n int) (string, []float64, error) {
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.opts.BaseURL+"/v1/systemone", bytes.NewReader(payload))
 	if err != nil {
-		return Response{}, err
+		return "", nil, err
 	}
 	hreq.Header.Set("Authorization", "Bearer "+c.key)
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("User-Agent", "jrep")
 	hresp, err := c.http.Do(hreq)
 	if err != nil {
-		return Response{}, err
+		return "", nil, err
 	}
 	defer hresp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(hresp.Body, 1<<20))
 	if err != nil {
-		return Response{}, err
+		return "", nil, err
 	}
 	if hresp.StatusCode/100 != 2 {
-		return Response{}, &statusError{
+		return "", nil, &statusError{
 			status:     hresp.StatusCode,
 			body:       strings.TrimSpace(string(raw)),
 			retryAfter: parseRetryAfter(hresp.Header.Get("Retry-After")),
@@ -188,17 +243,17 @@ func (c *HTTP) post(ctx context.Context, payload []byte, n int) (Response, error
 	}
 	var rb responseBody
 	if err := json.Unmarshal(raw, &rb); err != nil {
-		return Response{}, fmt.Errorf("reading TypeSafe response: %w", err)
+		return "", nil, fmt.Errorf("reading TypeSafe response: %w", err)
 	}
-	out := Response{Model: rb.Model, Nouls: make([]float64, n)}
+	flat := make([]float64, n)
 	for i := range n {
 		a, ok := rb.Answers[id(i)]
 		if !ok || a.Noul == nil {
-			return Response{}, fmt.Errorf("TypeSafe response has no noul answer for %s", id(i))
+			return "", nil, fmt.Errorf("TypeSafe response has no noul answer for %s", id(i))
 		}
-		out.Nouls[i] = *a.Noul
+		flat[i] = *a.Noul
 	}
-	return out, nil
+	return rb.Model, flat, nil
 }
 
 func id(i int) string { return "q" + strconv.Itoa(i) }

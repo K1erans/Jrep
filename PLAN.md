@@ -82,7 +82,7 @@ no matches above 0.60 (best: 0.21 src/util/http.ts:5-40)
 1. walk      list files, following .gitignore, skipping binaries
 2. chunk     split files into functions/blocks of ~10–300 lines, reusing cached layouts
 3. pre-pass  only with -s: keep chunks matching the keywords
-4. key       sha256(model + question + chunk as sent) for every chunk
+4. key       sha256(model + question + chunk as sent alone) for every chunk
 5. cache     one batched lookup; hits are done
 6. ask Jev   misses go out in parallel, within the rate limits
 7. save      each answer goes into the cache as it arrives
@@ -136,7 +136,8 @@ Request: `POST https://api.typesafe.ai/v1/systemone`
 }
 ```
 
-- One request per chunk. Every question (`q0`, `q1`, …) is answered in that one request, so the chunk is paid for once.
+- One request per file, up to 24 KB of code. Every request costs ~240 tokens before its code, 40% of a scan's tokens on miniflux, so a file's chunks share one: the state holds `path` and `code_1`, `code_2`, …, and each question names its field ("The `code_2` …"). A lone chunk is sent as `{path, code}`, exactly as before packing. Packing cut a scan's tokens by about a third, and a target scored the same packed among other chunks, in any position, as alone.
+- Every question (`q0`, `q1`, …) about a chunk is answered in the same request, so the chunk is paid for once.
 - The state has no line numbers. They say nothing about what the code does, and as part of the key they would make an edit near the top of a file re-ask every chunk below it.
 - Scans are bound by the request rate, not tokens (a 92K-chunk scan is ~290 s of requests but ~165 s of tokens), and each request carries ~300 fixed tokens, so every chunk not sent saves both time and money.
 - Read `answers.qN.noul` (0–1) from the response.
@@ -147,7 +148,7 @@ Request: `POST https://api.typesafe.ai/v1/systemone`
 
 ```sql
 CREATE TABLE answers (
-  key        BLOB PRIMARY KEY,   -- sha256(model + question + chunk as sent)
+  key        BLOB PRIMARY KEY,   -- sha256(model + question + chunk as sent alone)
   noul       REAL NOT NULL,      -- Jev's probability
   model      TEXT NOT NULL,      -- e.g. "jev-1.13.0"
   last_used  INTEGER NOT NULL    -- unix time
@@ -161,7 +162,7 @@ CREATE TABLE chunks (
 ```
 
 - **Location:** `<user cache dir>/jrep/<sha256 of repo>.db`. On macOS that's `~/Library/Caches/jrep/`. The repo is the main checkout's folder, so every worktree of a repository shares one database (keys use repo-relative paths, so that's safe); outside git it is the search path.
-- **Key rule:** hash exactly what is sent to Jev. An edited chunk, renamed file, different question or new model version makes a new key, so stale answers can't come back. Code that only moved within its file keeps its key.
+- **Key rule:** hash exactly what Jev is asked about one chunk, as if sent alone, even when it shared a request with the rest of its file. An edited chunk, renamed file, different question or new model version makes a new key, so stale answers can't come back. Code that only moved within its file keeps its key, and editing one function re-asks only that function.
 - **Question normalisation:** lowercase, collapse whitespace and trim before hashing.
 - **Store the probability,** so changing `--threshold` needs no new Jev calls.
 - **Several processes at once:** WAL mode, a busy timeout and `INSERT OR IGNORE`. Switching a new file to WAL fails at once, without the busy timeout, while another process holds it, so opening retries.
