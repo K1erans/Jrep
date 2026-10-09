@@ -62,7 +62,8 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
 - `-s` sends only chunks containing the question's words (or
   `--keywords 'a|b'`): faster and cheaper on big repos, but misses code
   that uses other words.
-- Test files and test data are skipped; `--tests` includes them. Docs
+- Test files and test data are skipped unless the question is about tests
+  ("the tests for payment retries") or you pass `--tests`. Docs
   (Markdown etc.) are skipped; `--docs` includes them. Lockfiles, source
   maps, minified files, SVGs, `node_modules` and translation catalogs are
   skipped unless named.

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode"
 
 	"jrep/internal/cache"
 	"jrep/internal/chunk"
@@ -126,11 +127,15 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		return exitMatch, a.clearCache(repo)
 	}
 
-	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: cfg.Tests, Docs: cfg.Docs, MaxFileSize: cfg.MaxFileSize})
+	tests := cfg.Tests || aboutTests(cfg.Questions)
+	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: tests, Docs: cfg.Docs, MaxFileSize: cfg.MaxFileSize})
 	if err != nil {
 		return exitError, err
 	}
 	a.reportOversize(files.Oversize, cfg.MaxFileSize)
+	if tests && !cfg.Tests {
+		fmt.Fprintln(a.stderr, "jrep: searching test files too, since the question is about tests")
+	}
 	if files.Tests > 0 {
 		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
 	}
@@ -230,6 +235,38 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		}
 	}
 	return exitNoMatch, nil
+}
+
+// testWords in a question mean it is looking for tests, which are
+// otherwise skipped. "spec" is left out, as API specs are production code.
+var testWords = map[string]bool{
+	"test": true, "tests": true, "testing": true, "unittest": true, "unittests": true,
+	"testdata": true, "fixture": true, "fixtures": true, "mock": true, "mocks": true, "mocked": true,
+}
+
+// aboutTests reports whether any question asks about tests: "the tests
+// for retries", "mocks the payment client". "tests" followed by whether or
+// if is a verb, as in "tests whether the token expired", which asks about
+// production code.
+func aboutTests(questions []string) bool {
+	for _, q := range questions {
+		words := strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		})
+		for i, w := range words {
+			if !testWords[w] {
+				continue
+			}
+			if i+1 < len(words) && strings.HasPrefix(w, "test") {
+				switch words[i+1] {
+				case "whether", "if":
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func plural(n int, one, many string) string {

@@ -361,6 +361,48 @@ func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
 	}
 }
 
+func TestAQuestionAboutTestsSearchesTestFiles(t *testing.T) {
+	files := map[string]string{"src/billing/retry_test.go": "package billing\n\nfunc TestCharge() { chargeYaml() }\n"}
+	for k, v := range billing {
+		files[k] = v
+	}
+	project(t, files)
+	fake := &jevtest.Fake{Score: jevtest.Contains(map[string]string{"the test that parses yaml": "yaml"})}
+	h := newHarness(fake)
+	if code := h.run("the test that parses yaml"); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, h.errOut.String())
+	}
+	if !strings.Contains(h.out.String(), "src/billing/retry_test.go:1-3") {
+		t.Fatalf("out %q", h.out.String())
+	}
+	if want := "jrep: searching test files too, since the question is about tests\njrep: asking Jev about 3 chunks\n"; h.errOut.String() != want {
+		t.Fatalf("stderr %q", h.errOut.String())
+	}
+}
+
+func TestAboutTests(t *testing.T) {
+	for q, want := range map[string]bool{
+		"the test that covers retries":    true,
+		"tests for the payment client":    true,
+		"tests whether the token expired": false,
+		"testing if a port is free":       false,
+		"test helpers that build users":   true,
+		"mocks the payment client":        true,
+		"loads fixtures for the db":       true,
+		"retries failed payments":         false,
+		"parses the openapi spec":         false,
+		"latest attestation is verified":  false,
+		"where retry_test checks backoff": true,
+	} {
+		if got := aboutTests([]string{q}); got != want {
+			t.Errorf("aboutTests(%q) = %v, want %v", q, got, want)
+		}
+	}
+	if !aboutTests([]string{"retries failed payments", "the test that covers retries"}) {
+		t.Error("any question about tests counts")
+	}
+}
+
 func TestTranslationsAreLeftOutAndReported(t *testing.T) {
 	files := map[string]string{"locales/de.json": "{\"charge\": \"belasten\"}\n", "po/fr.po": "msgid \"charge\"\n"}
 	for k, v := range billing {

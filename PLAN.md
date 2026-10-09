@@ -16,7 +16,7 @@ jrep "retries failed payments" src/
 | Search | Every search asks Jev. There is no regex mode. |
 | Keyword pre-pass | Off by default, so every chunk goes to Jev. `-s` turns it on. |
 | Ignored files | `.gitignore` is followed by default. `--no-ignore` turns it off. |
-| Test files | Skipped by default (they crowd out the code they test). `--tests` includes them. |
+| Test files | Skipped by default (they crowd out the code they test). Included when a question is about tests ("the tests for retries", "mocks the client"), or with `--tests`. |
 | Docs | Markdown, reStructuredText and AsciiDoc skipped by default, for the same reason. `--docs` includes them. |
 | Generated files | Lockfiles, source maps, minified bundles, SVGs and `node_modules` are always skipped unless named. |
 | Results | Line ranges with a probability, best first, short by default. |

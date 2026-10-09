@@ -38,7 +38,7 @@ Every search goes through Jev, and there is no regex mode. Files are split into 
 17. As a developer, I want ignore rules inside a git repo to match git exactly, so that jrep and git agree on which files count.
 18. As a developer, I want `.gitignore` files honoured outside a git repo too, so that unversioned folders behave the same way.
 19. As a developer, I want `--no-ignore`, so that I can search ignored files on purpose.
-19a. As a coding agent, I want test files and test data skipped unless I pass `--tests`, so that the code under test isn't crowded out of the results.
+19a. As a coding agent, I want test files and test data skipped unless I pass `--tests` or my question is about tests, so that the code under test isn't crowded out of the results, but a search for tests finds them.
 19b. As a coding agent, I want docs skipped unless I pass `--docs`, so that prose describing a feature doesn't crowd out its code.
 19c. As a developer, I want lockfiles, source maps, minified bundles, SVGs, `node_modules` and translation catalogs skipped unless named, so that I don't pay for files that never answer a question.
 20. As a developer, I want binary files skipped silently, so that they never reach Jev.

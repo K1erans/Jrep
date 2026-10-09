@@ -30,6 +30,10 @@ narrowest folder you're confident holds the code:
 
 - Phrase the question as what the code does: "sends the password reset
   email", not "where is the email code".
+- Say what kind of code you want. Looking for tests? Say so: "the tests for
+  payment retries", "mocks the payment client". Test files are skipped
+  unless a question mentions tests (test, testing, mock, fixture, …) or you
+  pass `--tests`; stderr says when they were searched.
 - Ask everything you need in one call: `-q` adds questions to the same scan
   at almost no extra cost.
 
@@ -54,7 +58,8 @@ In this order, cheapest first:
 
 ## What is left out
 
-Tests and docs are skipped unless you add `--tests` or `--docs`. Generated
+Tests are skipped unless a question is about tests or you add `--tests`;
+docs are skipped unless you add `--docs`. Generated
 files (lockfiles, source maps, minified bundles, SVGs, `node_modules`) and
 translation catalogs are skipped unless you name them as a path. Files over
 1 MB are skipped and listed on stderr.

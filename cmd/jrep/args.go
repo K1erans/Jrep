@@ -24,7 +24,8 @@ Prints matching line ranges, best first. Exit status: 0 match, 1 no match, 2 err
   --top 10               maximum results per question (0 = no limit)
   --json                 one JSON object per match
   --no-ignore            also search gitignored files
-  --tests                also search test files and test data
+  --tests                also search test files and test data (on by itself when a
+                         question is about tests: "the test that covers retries")
   --docs                 also search documentation (Markdown, reStructuredText, AsciiDoc)
   --max-filesize 1M      skip larger files, listed on stderr (0 = no limit)
   --model jev-1.13.0     Jev model version
