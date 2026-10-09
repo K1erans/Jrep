@@ -16,11 +16,11 @@ Don't search the whole repo by default. Look at the layout, then pass the
 narrowest folder you're confident holds the code:
 
     ls                       # and ls a level down where it helps
-    jrep "removes tracking pixels from article HTML" internal/reader/
+    jrep "retries failed payments" src/billing/
 
-- Choose by what the folder is for: HTML clean-up under `reader/`, storage
+- Choose by what the folder is for: payments under `billing/`, storage
   under `storage/`, request handlers under `api/` or `ui/`.
-- Several folders are fine: `jrep "question" internal/reader/ internal/http/`.
+- Several folders are fine: `jrep "question" src/billing/ src/http/`.
 - When unsure between two levels, take the parent folder. Search the whole
   repo only when you have no idea where the code lives.
 - stderr says `asking Jev about N chunks`: that is the cost of the search.
