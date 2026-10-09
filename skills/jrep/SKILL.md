@@ -7,7 +7,7 @@ description: Find code by what it does with jrep, scoped to the folders most lik
 
 jrep asks TypeSafe's Jev model about every chunk of code under the paths you
 give it, so a search costs money and time in proportion to how much code it
-covers: about 1¢ and a second per 400 chunks, and a whole repo can be
+covers: about 0.7¢ and a second per 400 chunks, and a whole repo can be
 thousands. Answers are cached, so repeating a question is free.
 
 ## 1. Pick one folder first
