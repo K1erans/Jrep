@@ -36,10 +36,15 @@ one folder you're confident holds the code, as deep as you're sure of:
   payment retries", "mocks the payment client". Test files are skipped
   unless a question mentions tests (test, testing, mock, fixture, …) or you
   pass `--tests`; stderr says when they were searched.
-- Ask everything you need in one call: `-q` adds questions to the same scan
-  at almost no extra cost.
+- One question is the default. If you need other things from the same
+  folder, or aren't sure what words the code uses, add up to two `-q` (the
+  other questions, or the same question in other words). Three in one call
+  cost about 40% of three separate calls, and answered exactly as well as
+  asking each alone. Each extra question still adds about a quarter of a
+  scan's cost, so don't add them for nothing. Don't go past three: with many
+  questions a request can exceed Jev's limit and the whole search fails.
 
-      jrep "validates webhook signatures" -q "parses webhook payloads" internal/webhooks/
+      jrep "validates webhook signatures" -q "parses webhook payloads" -q "rejects replayed webhooks" internal/webhooks/
 
 ## 3. Read the results
 

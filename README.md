@@ -51,8 +51,10 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
 - Exit code 0 means matches, 1 means none above the threshold, 2 an error.
   On 1 it prints the best candidate: rephrase, or lower `--threshold`
   (cached, so it's free).
-- `-q` adds questions to the same scan at no extra cost; prefer one call
-  with several `-q` over several calls.
+- Ask one question unless you need more: up to two `-q` for other things
+  in the same folder, or rewordings when unsure of the code's words. Three
+  in one call cost about 40% of three separate calls and answer as well.
+  Don't go past three; with many questions a request can exceed Jev's limit.
 - Pass the one folder most likely to hold the code, as deep as you're
   sure of (`ls` first); add another or step up to the parent only after a
   miss. Cost scales with how much code is searched, and stderr says how
