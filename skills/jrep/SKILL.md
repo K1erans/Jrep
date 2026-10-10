@@ -6,70 +6,53 @@ description: Find code by what it does with jrep, scoped to the folders most lik
 # Searching code with jrep
 
 jrep asks TypeSafe's Jev model about every chunk of code under the paths you
-give it, so a search costs money and time in proportion to how much code it
-covers: about 0.7¢ and a second per 400 chunks, and a whole repo can be
-thousands. Answers are cached, so repeating a question is free.
+give it, so cost grows with the code covered: about 0.7¢ and a second per 400
+chunks, and a whole repo can be thousands. Answers are cached, so repeats are
+free.
 
-## 1. Pick one folder first
+## 1. Pick one folder
 
-Don't search the whole repo by default. Look at the layout, then pass the
-one folder you're confident holds the code, as deep as you're sure of:
+Look at the layout (`ls`), then pass the one folder you're sure holds the
+code, as deep as you're sure of:
 
-    ls                       # and ls a level down where it helps
     jrep "retries failed payments" src/billing/
 
-- Choose by what the folder is for: payments under `billing/`, storage
-  under `storage/`, request handlers under `api/` or `ui/`.
-- Go as deep as you're sure of: `src/billing/retry/` costs less than
-  `src/billing/`, which costs less than `src/`.
-- Start with one folder. Add a second, or step up to the parent, only after
-  a search misses. Search the whole repo only when you have no idea where
-  the code lives.
-- stderr says `asking Jev about N chunks`: that is the cost of the search.
-  Nothing is printed when every answer was cached.
+Choose by what the folder is for: payments under `billing/`, handlers under
+`api/`. Widen only after a miss, and search the whole repo only when you have
+no idea where the code lives. stderr's `asking Jev about N chunks` is the cost.
 
 ## 2. Ask well
 
-- Phrase the question as what the code does: "sends the password reset
-  email", not "where is the email code".
-- Say what kind of code you want. Looking for tests? Say so: "the tests for
-  payment retries", "mocks the payment client". Test files are skipped
-  unless a question mentions tests (test, testing, mock, fixture, …) or you
-  pass `--tests`; stderr says when they were searched.
-- One question is the default. If you need other things from the same
-  folder, or aren't sure what words the code uses, add up to two `-q` (the
-  other questions, or the same question in other words). Three in one call
-  cost about 40% of three separate calls, and answered exactly as well as
-  asking each alone. Each extra question still adds about a quarter of a
-  scan's cost, so don't add them for nothing. Don't go past three: with many
-  questions a request can exceed Jev's limit and the whole search fails.
+- Phrase it as what the code does: "sends the password reset email", not
+  "where is the email code".
+- Tests are skipped unless the question mentions them ("the tests for payment
+  retries", "mocks the payment client") or you pass `--tests`.
+- To ask other things about the same folder, or the same thing in other
+  words, add up to two `-q`. Three questions in one call cost about 40% of
+  three calls and answer as well, but each extra still adds about a quarter of
+  a scan. More than three can exceed Jev's limit and fail the search.
 
-      jrep "validates webhook signatures" -q "parses webhook payloads" -q "rejects replayed webhooks" internal/webhooks/
+      jrep "validates webhook signatures" -q "parses webhook payloads" internal/webhooks/
 
 ## 3. Read the results
 
-- Output is `probability  path:start-end  signature`, best first. Read the
-  ranges it prints rather than whole files.
-- Exit code 0 means matches, 1 means none above the threshold, 2 an error.
+Output is `probability  path:start-end  signature`, best first; read the
+printed ranges, not whole files. Exit 0 means matches, 1 none above the
+threshold, 2 an error.
 
 ## 4. When it misses
 
-In this order, cheapest first:
+Cheapest first:
 
-1. Lower the threshold: `--threshold 0.3`. It's served from the cache, so
-   it's free, and the right code is often just under the default 0.6.
+1. `--threshold 0.3` (default 0.6): free, served from the cache.
 2. Narrow the folder if a result points at the right area.
-3. Widen if nothing comes close: add the next likely folder, or step up to
-   the parent. Ask the same question, so the folders already searched are
-   answered from the cache.
-4. Reword the question and add `--refine "your earlier question"`: it asks
-   the new wording about only the 300 chunks that best matched the earlier
-   one, about a tenth of the cost of a new scan.
+3. Widen: add the next likely folder or step up to the parent. Keep the same
+   question so folders already searched come from the cache.
+4. Reword and add `--refine "earlier question"`: it asks only the 300 chunks
+   that best matched the earlier one, about a tenth of a new scan.
 
 ## What is left out
 
-Tests are skipped unless a question is about tests or you add `--tests`;
-docs are skipped unless you add `--docs`. Generated
-files (lockfiles, source maps, minified bundles, SVGs, `node_modules`) and
-translation catalogs are skipped unless you name them as a path. Files over
-1 MB are skipped and listed on stderr.
+Docs need `--docs`. Generated files (lockfiles, source maps, minified bundles,
+SVGs, `node_modules`) and translation catalogs are skipped unless named as a
+path. Files over 1 MB are skipped and listed on stderr.
