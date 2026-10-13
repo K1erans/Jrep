@@ -14,12 +14,39 @@ about every chunk. Answers are cached per repository (worktrees share
 them), so repeat searches, and searches at a different `--threshold`, make
 no new calls. Every chunk searched is sent to TypeSafe.
 
+## Before writing new code
+
+`jrep reuse` says whether to build on existing code or write new code:
+
+```
+$ jrep reuse "exports invoices as CSV" src/billing/
+extend  0.88  src/billing/export.ts:10-64  exportInvoicesJSON(invoices)
+
+$ jrep reuse "uploads receipts to S3" src/billing/
+create  no code to extend above 0.60 (best: 0.12 src/billing/retry.ts:12-80)
+```
+
+Claude Haiku describes each chunk in plain words, and Jev is asked about
+the descriptions: whether one does what the new code will, or the broader
+kind of work it is part of ("exports invoices to an output format" for
+CSV). `--code draft.go` checks draft code instead of words. Exit code 0
+means extend, 1 create.
+
+Descriptions are cached like answers, so only new or edited code is
+described again. Every chunk checked is also sent to Anthropic.
+
 ## Install
 
 ```
 export TYPESAFE_API_KEY=...   # fish: set -Ux TYPESAFE_API_KEY ...
 make install                  # common-language grammars only, ~20 MB
 ```
+
+`jrep reuse` also needs a Claude login, found the way the Anthropic SDK
+finds one: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or a profile from
+`ant auth login`. Without one, it runs Claude Code's `claude` command, which
+uses its login, such as a Claude subscription (`claude auth login`). Set
+`JREP_CLAUDE_LOGIN` to `api` or `claude` to pick one.
 
 `go install ./cmd/jrep` also works and embeds all 206 grammars (~33 MB).
 
@@ -30,9 +57,10 @@ design.
 
 `skills/jrep/SKILL.md` teaches an agent to use jrep well, chiefly to pass
 the folders most likely to hold the code instead of scanning the whole repo,
-since cost scales with the code searched. `make install-skill` copies it to
-`~/.claude/skills/jrep/` for Claude Code; other agents can read the file as
-it is.
+since cost scales with the code searched. `skills/jrep-reuse/SKILL.md` has
+an agent run `jrep reuse` before writing a new function, and build on the code
+it names. `make install-skill` copies both to `~/.claude/skills/` for Claude
+Code; other agents can read the files as they are.
 
 ## Snippet for AGENTS.md / CLAUDE.md
 
@@ -70,6 +98,9 @@ Use `jrep` to find code by behaviour; use `rg` for exact strings and names.
   (Markdown etc.) are skipped; `--docs` includes them. Lockfiles, source
   maps, minified files, SVGs, `node_modules` and translation catalogs are
   skipped unless named.
+- Before writing a new function, run `jrep reuse "what it will do" folder/`
+  (or `--code draft.go`). `extend` names the code to build on; `create`
+  means nothing fits.
 - `--json` prints one object per match.
 - Files over 1 MB are skipped and listed on stderr; `--max-filesize 0`
   includes them.

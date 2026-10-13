@@ -227,3 +227,40 @@ func TestChunkLayoutsPersistAndAgeOut(t *testing.T) {
 		t.Fatalf("after 31 days only the layout used on day 20 should be left, got %q", got)
 	}
 }
+
+func TestDescriptionsPersistAndAgeOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repo.db")
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) { now = func() time.Time { return t0.Add(d) } }
+	defer func() { now = time.Now }()
+	day := 24 * time.Hour
+
+	at(0)
+	c := open(t, path, "m")
+	if err := c.PutDescriptions(map[Key]string{key(1): "Retries a charge.", key(2): "Emails a receipt."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutDescriptions(map[Key]string{key(1): "other"}); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+
+	at(20 * day)
+	c = open(t, path, "other-model") // descriptions key their own model
+	got, err := c.GetDescriptions([]Key{key(1), key(3)})
+	c.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[key(1)] != "Retries a charge." {
+		t.Fatalf("got %q", got)
+	}
+
+	at(31 * day)
+	c = open(t, path, "m")
+	defer c.Close()
+	got, _ = c.GetDescriptions([]Key{key(1), key(2)})
+	if len(got) != 1 || got[key(1)] == "" {
+		t.Fatalf("after 31 days only the description used on day 20 should be left, got %q", got)
+	}
+}

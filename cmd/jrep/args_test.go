@@ -117,3 +117,47 @@ func TestRefineNamesAnEarlierQuestionAndNeedsTheCache(t *testing.T) {
 		t.Fatalf("--refine reads cached answers, so --no-cache should be rejected: %v", err)
 	}
 }
+
+func TestParseReuseArgs(t *testing.T) {
+	cfg, err := parseReuseArgs([]string{"writes matches as CSV", "src/", "--threshold", "0.7", "lib/", "--tests", "--no-cache"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := reuseConfig{
+		Feature:     "writes matches as CSV",
+		Paths:       []string{"src/", "lib/"},
+		Threshold:   0.7,
+		Tests:       true,
+		MaxFileSize: 1 << 20,
+		Model:       "jev-1.13.0",
+		NoCache:     true,
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Fatalf("got %+v\nwant %+v", cfg, want)
+	}
+
+	cfg, err = parseReuseArgs([]string{"--code", "-", "src/"})
+	if err != nil || cfg.Draft != "-" || cfg.Feature != "" || !reflect.DeepEqual(cfg.Paths, []string{"src/"}) {
+		t.Fatalf("--code: %+v, %v", cfg, err)
+	}
+	cfg, err = parseReuseArgs([]string{"--code", "draft.go"})
+	if err != nil || !reflect.DeepEqual(cfg.Paths, []string{"."}) {
+		t.Fatalf("paths should default to .: %+v, %v", cfg, err)
+	}
+}
+
+func TestParseReuseArgsErrors(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "missing what the new code will do"},
+		{[]string{"  "}, "empty question"},
+		{[]string{"--code", " "}, "empty --code"},
+		{[]string{"x", "--top", "3"}, "not defined: -top"},
+	} {
+		if _, err := parseReuseArgs(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: got %v, want %q", tc.args, err, tc.want)
+		}
+	}
+}

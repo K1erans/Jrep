@@ -16,6 +16,8 @@ import (
 	"testing"
 
 	"jrep/internal/cache"
+	"jrep/internal/describe"
+	"jrep/internal/describe/describetest"
 	"jrep/internal/jev"
 	"jrep/internal/jev/jevtest"
 )
@@ -45,14 +47,17 @@ type harness struct {
 	app
 	out, errOut bytes.Buffer
 	store       *cache.Memory
+	claude      *describetest.Fake
 }
 
 func newHarness(client jev.Client) *harness {
-	h := &harness{store: cache.NewMemory()}
+	h := &harness{store: cache.NewMemory(), claude: &describetest.Fake{}}
 	h.app = app{
-		stdout: &h.out,
-		stderr: &h.errOut,
-		client: func() (jev.Client, error) { return client, nil },
+		stdin:     strings.NewReader(""),
+		stdout:    &h.out,
+		stderr:    &h.errOut,
+		client:    func() (jev.Client, error) { return client, nil },
+		describer: func() (describe.Client, error) { return h.claude, nil },
 		openCache: func(string, string) (cache.Cache, func() error, error) {
 			return h.store, func() error { return nil }, nil
 		},
@@ -174,7 +179,7 @@ func TestClearCacheForgetsAnswers(t *testing.T) {
 	t.Setenv("JREP_CACHE_DIR", t.TempDir())
 	fake := scorer()
 	h := newHarness(fake)
-	disk := realApp(&h.out, &h.errOut)
+	disk := realApp(nil, &h.out, &h.errOut)
 	h.openCache, h.clearCache = disk.openCache, disk.clearCache
 
 	h.run("retries failed payments")
@@ -198,7 +203,7 @@ func TestUnusableCacheWarnsButSearches(t *testing.T) {
 	os.WriteFile(blocker, nil, 0o644)
 	t.Setenv("JREP_CACHE_DIR", filepath.Join(blocker, "sub")) // can't create a folder under a file
 	h := newHarness(scorer())
-	h.openCache = realApp(&h.out, &h.errOut).openCache
+	h.openCache = realApp(nil, &h.out, &h.errOut).openCache
 	if code := h.run("retries failed payments"); code != exitMatch {
 		t.Fatalf("exit %d", code)
 	}
@@ -267,7 +272,7 @@ func TestNoAPIKeyOnlyFailsWhenJevIsNeeded(t *testing.T) {
 	t.Setenv("JREP_CACHE_DIR", t.TempDir())
 	t.Setenv("TYPESAFE_API_KEY", "")
 	h := newHarness(scorer())
-	disk := realApp(&h.out, &h.errOut)
+	disk := realApp(nil, &h.out, &h.errOut)
 	h.openCache = disk.openCache
 
 	h.run("retries failed payments") // fills the cache through the fake
@@ -285,7 +290,7 @@ func TestBadRateOverrideIsAnError(t *testing.T) {
 	t.Setenv("TYPESAFE_API_KEY", "k")
 	t.Setenv("JREP_MAX_RPS", "fast")
 	h := newHarness(scorer())
-	h.client = realApp(&h.out, &h.errOut).client
+	h.client = realApp(nil, &h.out, &h.errOut).client
 	if code := h.run("q"); code != exitError || !strings.Contains(h.errOut.String(), "JREP_MAX_RPS") {
 		t.Fatalf("exit %d, stderr %q", code, h.errOut.String())
 	}
@@ -314,7 +319,7 @@ func TestRealWiringAgainstAFakeServer(t *testing.T) {
 	t.Setenv("JREP_CACHE_DIR", t.TempDir())
 
 	var out, errOut bytes.Buffer
-	a := realApp(&out, &errOut)
+	a := realApp(nil, &out, &errOut)
 	if code := a.run(context.Background(), []string{"retries failed payments"}); code != exitMatch {
 		t.Fatalf("exit %d, %s", code, errOut.String())
 	}
@@ -487,7 +492,7 @@ func TestWorktreesShareTheCache(t *testing.T) {
 	t.Setenv("JREP_CACHE_DIR", t.TempDir())
 	fake := scorer()
 	h := newHarness(fake)
-	disk := realApp(&h.out, &h.errOut)
+	disk := realApp(nil, &h.out, &h.errOut)
 	h.openCache, h.clearCache = disk.openCache, disk.clearCache
 
 	h.run("retries failed payments")

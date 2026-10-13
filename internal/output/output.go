@@ -68,6 +68,22 @@ func JSON(w io.Writer, results []search.Result) error {
 	return nil
 }
 
+// Extend prints the code jrep reuse found to build on.
+func Extend(w io.Writer, m search.Match) {
+	line := fmt.Sprintf("extend  %.2f  %s  %s", m.Probability, location(m), m.Signature)
+	fmt.Fprintln(w, strings.TrimRight(line, " "))
+}
+
+// Create says jrep reuse found nothing to build on, with the best
+// candidate, so an agent can check it before writing new code.
+func Create(w io.Writer, best *search.Match, threshold float64) {
+	if best == nil {
+		fmt.Fprintln(w, "create  no code to extend (nothing searched)")
+		return
+	}
+	fmt.Fprintf(w, "create  no code to extend above %.2f (best: %.2f %s)\n", threshold, best.Probability, location(*best))
+}
+
 func location(m search.Match) string {
 	return fmt.Sprintf("%s:%d-%d", m.Path, m.Start, m.End)
 }

@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS chunks (
 	layout    BLOB NOT NULL,
 	last_used INTEGER NOT NULL
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS descriptions (
+	key       BLOB PRIMARY KEY,
+	text      TEXT NOT NULL,
+	last_used INTEGER NOT NULL
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (
 	name  TEXT PRIMARY KEY,
 	value INTEGER NOT NULL
@@ -166,6 +171,9 @@ func (c *SQLite) cleanup() error {
 	if _, err := tx.Exec(`DELETE FROM chunks WHERE last_used < ?`, stale); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM descriptions WHERE last_used < ?`, stale); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO meta (name, value) VALUES ('last_cleanup', ?)`, t); err != nil {
 		return err
 	}
@@ -182,6 +190,12 @@ func (c *SQLite) Get(keys []Key) (map[Key]float64, error) {
 // marks those rows as used.
 func (c *SQLite) GetChunks(keys []Key) (map[Key][]byte, error) {
 	return lookup[[]byte](c, "chunks", "layout", keys)
+}
+
+// GetDescriptions returns the stored description for every key it holds,
+// and marks those rows as used.
+func (c *SQLite) GetDescriptions(keys []Key) (map[Key]string, error) {
+	return lookup[string](c, "descriptions", "text", keys)
 }
 
 // lookup reads column for keys from table in batches, refreshing last_used
@@ -246,7 +260,19 @@ func (c *SQLite) Put(key Key, noul float64) error {
 // PutChunks saves chunk layouts in one transaction. As with answers, an
 // existing layout for a key is kept.
 func (c *SQLite) PutChunks(layouts map[Key][]byte) error {
-	if len(layouts) == 0 {
+	return insert(c, "chunks", "layout", layouts)
+}
+
+// PutDescriptions saves descriptions in one transaction, keeping any
+// already stored for a key.
+func (c *SQLite) PutDescriptions(descriptions map[Key]string) error {
+	return insert(c, "descriptions", "text", descriptions)
+}
+
+// insert saves rows into table in one transaction. An existing row for a
+// key is kept: the key already pins what it was made from.
+func insert[V any](c *SQLite, table, column string, rows map[Key]V) error {
+	if len(rows) == 0 {
 		return nil
 	}
 	tx, err := c.db.Begin()
@@ -254,14 +280,14 @@ func (c *SQLite) PutChunks(layouts map[Key][]byte) error {
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO chunks (key, layout, last_used) VALUES (?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO ` + table + ` (key, ` + column + `, last_used) VALUES (?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	t := now().Unix()
-	for k, layout := range layouts {
-		if _, err := stmt.Exec(k[:], layout, t); err != nil {
+	for k, v := range rows {
+		if _, err := stmt.Exec(k[:], v, t); err != nil {
 			return err
 		}
 	}

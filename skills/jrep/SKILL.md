@@ -51,6 +51,14 @@ Cheapest first:
 4. Reword and add `--refine "earlier question"`: it asks only the 300 chunks
    that best matched the earlier one, about a tenth of a new scan.
 
+## 5. Before writing new code
+
+Check for code to build on first, scoped to the folder the new code would
+live in. `extend` names code to add to, and `create` means write new code; the
+jrep-reuse skill covers it.
+
+    jrep reuse "writes search matches out as CSV rows" internal/output/
+
 ## What is left out
 
 Docs need `--docs`. Generated files (lockfiles, source maps, minified bundles,

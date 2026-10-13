@@ -13,10 +13,12 @@ build:
 install:
 	go install -tags '$(TAGS)' ./cmd/jrep
 
-# The agent skill: how to search with jrep, scoped to the right folders.
+# The agent skills: how to search with jrep, scoped to the right folders,
+# and how to check for code to build on with jrep reuse.
 install-skill:
-	mkdir -p $(HOME)/.claude/skills/jrep
+	mkdir -p $(HOME)/.claude/skills/jrep $(HOME)/.claude/skills/jrep-reuse
 	cp skills/jrep/SKILL.md $(HOME)/.claude/skills/jrep/SKILL.md
+	cp skills/jrep-reuse/SKILL.md $(HOME)/.claude/skills/jrep-reuse/SKILL.md
 
 test:
 	go test ./...

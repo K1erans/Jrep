@@ -15,6 +15,7 @@ import (
 
 	"jrep/internal/cache"
 	"jrep/internal/chunk"
+	"jrep/internal/describe"
 	"jrep/internal/jev"
 	"jrep/internal/output"
 	"jrep/internal/prefilter"
@@ -39,21 +40,24 @@ const refineTop = 300
 
 // app holds what main wires up for real and tests replace.
 type app struct {
+	stdin          io.Reader
 	stdout, stderr io.Writer
 	client         func() (jev.Client, error)
+	describer      func() (describe.Client, error)
 	openCache      func(repo, model string) (cache.Cache, func() error, error)
 	clearCache     func(repo string) error
 }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := realApp(os.Stdout, os.Stderr).run(ctx, os.Args[1:])
+	code := realApp(os.Stdin, os.Stdout, os.Stderr).run(ctx, os.Args[1:])
 	stop()
 	os.Exit(code)
 }
 
-func realApp(stdout, stderr io.Writer) app {
+func realApp(stdin io.Reader, stdout, stderr io.Writer) app {
 	return app{
+		stdin:  stdin,
 		stdout: stdout,
 		stderr: stderr,
 		client: func() (jev.Client, error) {
@@ -70,6 +74,11 @@ func realApp(stdout, stderr io.Writer) app {
 				return nil, err
 			}
 			return jev.NewHTTP(key, opts), nil
+		},
+		// A missing login only fails when a call is made, so descriptions
+		// already cached need none.
+		describer: func() (describe.Client, error) {
+			return describe.Login(describe.DefaultModel)
 		},
 		openCache: func(repo, model string) (cache.Cache, func() error, error) {
 			dir, err := cache.Dir()
@@ -101,6 +110,9 @@ func (noKey) Ask(context.Context, jev.Request) (jev.Response, error) {
 }
 
 func (a app) run(ctx context.Context, args []string) int {
+	if len(args) > 0 && args[0] == "reuse" {
+		return a.runReuse(ctx, args[1:])
+	}
 	cfg, err := parseArgs(args)
 	if errors.Is(err, errHelp) {
 		fmt.Fprint(a.stdout, usage)
@@ -128,53 +140,15 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 	}
 
 	tests := cfg.Tests || aboutTests(cfg.Questions)
-	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: tests, Docs: cfg.Docs, MaxFileSize: cfg.MaxFileSize})
-	if err != nil {
-		return exitError, err
-	}
-	a.reportOversize(files.Oversize, cfg.MaxFileSize)
 	if tests && !cfg.Tests {
 		fmt.Fprintln(a.stderr, "jrep: searching test files too, since the question is about tests")
 	}
-	if files.Tests > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
-	}
-	if files.Generated > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d generated %s not searched (lockfiles, source maps, minified, SVG, node_modules; name %s to include)\n",
-			files.Generated, plural(files.Generated, "file", "files"), plural(files.Generated, "it", "them"))
-	}
-	if files.Translations > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d translation %s not searched (name %s to include)\n",
-			files.Translations, plural(files.Translations, "file", "files"), plural(files.Translations, "it", "them"))
-	}
-	if files.Docs > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d %s not searched (use --docs to include)\n", files.Docs, plural(files.Docs, "doc", "docs"))
-	}
-
-	// A broken cache costs money, not correctness: warn and carry on.
-	store, closeStore, err := a.openCache(files.Repo, cfg.Model)
-	if err != nil {
-		fmt.Fprintf(a.stderr, "jrep: warning: cache unavailable, answers won't be saved: %v\n", err)
-		store, closeStore = cache.NewMemory(), func() error { return nil }
-	}
-	defer closeStore()
-	warned := false
-	onCacheError := func(err error) {
-		if !warned {
-			warned = true
-			fmt.Fprintf(a.stderr, "jrep: warning: cache not working: %v\n", err)
-		}
-	}
-
-	chunks, err := search.Load(files.Files, search.LoadOptions{
-		Chunk:        chunk.Default,
-		Store:        store,
-		ReadCache:    !cfg.NoCache,
-		OnCacheError: onCacheError,
-	})
+	w, err := a.load(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: tests, Docs: cfg.Docs, MaxFileSize: cfg.MaxFileSize}, cfg.Model, cfg.NoCache)
 	if err != nil {
 		return exitError, err
 	}
+	defer w.close()
+	chunks, store := w.chunks, w.store
 	if cfg.Prepass {
 		f, err := prefilter.New(cfg.Keywords, cfg.Questions)
 		if err != nil {
@@ -212,10 +186,8 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		Threshold:    cfg.Threshold,
 		Top:          cfg.Top,
 		ReadCache:    !cfg.NoCache,
-		OnCacheError: onCacheError,
-		OnAsk: func(n int) {
-			fmt.Fprintf(a.stderr, "jrep: asking Jev about %d %s\n", n, plural(n, "chunk", "chunks"))
-		},
+		OnCacheError: w.cacheError,
+		OnAsk:        a.onAsk,
 	})
 	if err != nil {
 		return exitError, err
@@ -235,6 +207,66 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		}
 	}
 	return exitNoMatch, nil
+}
+
+// workspace is the chunks to search and the repo's cache.
+type workspace struct {
+	chunks     []search.Chunk
+	store      cache.Cache
+	close      func() error
+	cacheError func(error) // warns once; a broken cache costs money, not correctness
+}
+
+// load walks paths, says on stderr what it left out, opens the repo's cache
+// and splits the files into chunks.
+func (a app) load(paths []string, opts walk.Options, model string, noCache bool) (workspace, error) {
+	files, err := walk.Walk(paths, opts)
+	if err != nil {
+		return workspace{}, err
+	}
+	a.reportOversize(files.Oversize, opts.MaxFileSize)
+	if files.Tests > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
+	}
+	if files.Generated > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d generated %s not searched (lockfiles, source maps, minified, SVG, node_modules; name %s to include)\n",
+			files.Generated, plural(files.Generated, "file", "files"), plural(files.Generated, "it", "them"))
+	}
+	if files.Translations > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d translation %s not searched (name %s to include)\n",
+			files.Translations, plural(files.Translations, "file", "files"), plural(files.Translations, "it", "them"))
+	}
+	if files.Docs > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d %s not searched (use --docs to include)\n", files.Docs, plural(files.Docs, "doc", "docs"))
+	}
+
+	w := workspace{}
+	if w.store, w.close, err = a.openCache(files.Repo, model); err != nil {
+		fmt.Fprintf(a.stderr, "jrep: warning: cache unavailable, answers won't be saved: %v\n", err)
+		w.store, w.close = cache.NewMemory(), func() error { return nil }
+	}
+	warned := false
+	w.cacheError = func(err error) {
+		if !warned {
+			warned = true
+			fmt.Fprintf(a.stderr, "jrep: warning: cache not working: %v\n", err)
+		}
+	}
+	w.chunks, err = search.Load(files.Files, search.LoadOptions{
+		Chunk:        chunk.Default,
+		Store:        w.store,
+		ReadCache:    !noCache,
+		OnCacheError: w.cacheError,
+	})
+	if err != nil {
+		w.close()
+		return workspace{}, err
+	}
+	return w, nil
+}
+
+func (a app) onAsk(n int) {
+	fmt.Fprintf(a.stderr, "jrep: asking Jev about %d %s\n", n, plural(n, "chunk", "chunks"))
 }
 
 // testWords in a question mean it is looking for tests, which are

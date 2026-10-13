@@ -11,6 +11,8 @@ import (
 )
 
 const usage = `usage: jrep [flags] "question" [path...]
+       jrep reuse [flags] "what the new code will do" [path...]
+       jrep reuse [flags] --code draft.go [path...]
 
 Searches code by what it does, using TypeSafe's Jev model.
 Prints matching line ranges, best first. Exit status: 0 match, 1 no match, 2 error.
@@ -32,12 +34,27 @@ Prints matching line ranges, best first. Exit status: 0 match, 1 no match, 2 err
   --no-cache             don't read cached answers
   --clear-cache          delete this repo's cache and exit
 
+jrep reuse checks for code to build on before writing new code. Claude describes
+each chunk, then Jev is asked which description does what the new code will, or
+the broader kind of work it is part of. Prints "extend" and the code to build on
+(exit 0), or "create" when nothing fits (exit 1).
+
+  --code FILE            draft code to check, instead of words ("-" reads stdin)
+  also takes --threshold, --no-ignore, --tests, --docs, --max-filesize, --model
+  and --no-cache
+
 Environment:
   TYPESAFE_API_KEY       API key (only needed when an answer isn't cached)
   TYPESAFE_BASE_URL      API base URL (default https://api.typesafe.ai)
   JREP_MAX_RPS           requests per second ceiling (default 320; halves on 429s)
   JREP_MAX_TPS           tokens per second ceiling (default 400000)
   JREP_CACHE_DIR         cache folder (default: jrep in the user cache folder)
+  ANTHROPIC_API_KEY      Claude login for jrep reuse (only needed when a description
+                         isn't cached); ANTHROPIC_AUTH_TOKEN, ANTHROPIC_PROFILE or
+                         a profile from ` + "`ant auth login`" + ` also work. Without
+                         one, jrep reuse runs Claude Code's claude command, which
+                         uses its login, such as a Claude subscription
+  JREP_CLAUDE_LOGIN      api or claude, to pick one of those logins
 `
 
 const defaultModel = "jev-1.13.0"
@@ -135,26 +152,9 @@ func parseArgs(args []string) (config, error) {
 	fs.BoolVar(&cfg.NoCache, "no-cache", false, "")
 	fs.BoolVar(&cfg.ClearCache, "clear-cache", false, "")
 
-	// flag stops at the first positional; keep going so flags may follow it.
-	var positional []string
-	for {
-		if err := fs.Parse(args); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return cfg, errHelp
-			}
-			return cfg, err
-		}
-		rest := fs.Args()
-		consumed := args[:len(args)-len(rest)]
-		if len(consumed) > 0 && consumed[len(consumed)-1] == "--" {
-			positional = append(positional, rest...)
-			break
-		}
-		if len(rest) == 0 {
-			break
-		}
-		positional = append(positional, rest[0])
-		args = rest[1:]
+	positional, err := parse(fs, args)
+	if err != nil {
+		return cfg, err
 	}
 
 	if !cfg.ClearCache {
@@ -180,9 +180,7 @@ func parseArgs(args []string) (config, error) {
 	if cfg.Top < 0 {
 		return cfg, fmt.Errorf("--top must be 0 or more, got %d", cfg.Top)
 	}
-	refine := false
-	fs.Visit(func(f *flag.Flag) { refine = refine || f.Name == "refine" })
-	if refine {
+	if set(fs, "refine") {
 		if strings.TrimSpace(cfg.Refine) == "" {
 			return cfg, errors.New("empty --refine question")
 		}
@@ -200,4 +198,93 @@ func parseArgs(args []string) (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// reuseConfig holds jrep reuse's flags.
+type reuseConfig struct {
+	Feature     string // what the new code will do, in words
+	Draft       string // file holding draft code instead, "-" for stdin
+	Paths       []string
+	Threshold   float64
+	NoIgnore    bool
+	Tests       bool
+	Docs        bool
+	MaxFileSize int64
+	Model       string
+	NoCache     bool
+}
+
+func parseReuseArgs(args []string) (reuseConfig, error) {
+	cfg := reuseConfig{
+		Threshold:   0.6,
+		MaxFileSize: 1 << 20,
+		Model:       defaultModel,
+	}
+	fs := flag.NewFlagSet("jrep reuse", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&cfg.Draft, "code", "", "")
+	fs.Float64Var(&cfg.Threshold, "threshold", cfg.Threshold, "")
+	fs.BoolVar(&cfg.NoIgnore, "no-ignore", false, "")
+	fs.BoolVar(&cfg.Tests, "tests", false, "")
+	fs.BoolVar(&cfg.Docs, "docs", false, "")
+	fs.Var(sizeValue{&cfg.MaxFileSize}, "max-filesize", "")
+	fs.StringVar(&cfg.Model, "model", cfg.Model, "")
+	fs.BoolVar(&cfg.NoCache, "no-cache", false, "")
+	positional, err := parse(fs, args)
+	if err != nil {
+		return cfg, err
+	}
+
+	if set(fs, "code") {
+		if strings.TrimSpace(cfg.Draft) == "" {
+			return cfg, errors.New("empty --code file name")
+		}
+	} else {
+		if len(positional) == 0 {
+			return cfg, errors.New("missing what the new code will do (or --code FILE)")
+		}
+		cfg.Feature, positional = positional[0], positional[1:]
+		if strings.TrimSpace(cfg.Feature) == "" {
+			return cfg, errors.New("empty question")
+		}
+	}
+	cfg.Paths = positional
+	if len(cfg.Paths) == 0 {
+		cfg.Paths = []string{"."}
+	}
+	if cfg.Threshold < 0 || cfg.Threshold > 1 {
+		return cfg, fmt.Errorf("--threshold must be between 0 and 1, got %v", cfg.Threshold)
+	}
+	return cfg, nil
+}
+
+// parse reads args with fs and returns the positionals. flag stops at the
+// first positional; this keeps going, so flags may follow it.
+func parse(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil, errHelp
+			}
+			return nil, err
+		}
+		rest := fs.Args()
+		consumed := args[:len(args)-len(rest)]
+		if len(consumed) > 0 && consumed[len(consumed)-1] == "--" {
+			return append(positional, rest...), nil
+		}
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
+}
+
+// set reports whether the flag called name was given.
+func set(fs *flag.FlagSet, name string) bool {
+	found := false
+	fs.Visit(func(f *flag.Flag) { found = found || f.Name == name })
+	return found
 }

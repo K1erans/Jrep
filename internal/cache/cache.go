@@ -9,18 +9,21 @@ import (
 )
 
 // Key is a sha256 (see Hash): of model + question + chunk as sent alone for an
-// answer, or of the splitter's version + file name + content for a layout.
+// answer, of the splitter's version + file name + content for a layout, or
+// of the prompt's version + model + what Claude was shown for a description.
 type Key [32]byte
 
-// Cache maps keys to Noul probabilities, and file contents to how they
-// were split into chunks, so a repeat search needn't parse every file
-// again. SQLite is the real store; any other store only has to implement
-// these calls.
+// Cache maps keys to Noul probabilities, file contents to how they were
+// split into chunks, so a repeat search needn't parse every file again, and
+// chunks to Claude's descriptions of them. SQLite is the real store; any
+// other store only has to implement these calls.
 type Cache interface {
 	Get(keys []Key) (map[Key]float64, error)
 	Put(key Key, noul float64) error
 	GetChunks(keys []Key) (map[Key][]byte, error)
 	PutChunks(layouts map[Key][]byte) error
+	GetDescriptions(keys []Key) (map[Key]string, error)
+	PutDescriptions(descriptions map[Key]string) error
 }
 
 // KeyOf hashes exactly what Jev is asked about one chunk, as if it were
@@ -50,12 +53,15 @@ func normalize(q string) string {
 
 // Memory is an in-process Cache, for tests and --no-cache style runs.
 type Memory struct {
-	mu     sync.Mutex
-	m      map[Key]float64
-	chunks map[Key][]byte
+	mu           sync.Mutex
+	m            map[Key]float64
+	chunks       map[Key][]byte
+	descriptions map[Key]string
 }
 
-func NewMemory() *Memory { return &Memory{m: map[Key]float64{}, chunks: map[Key][]byte{}} }
+func NewMemory() *Memory {
+	return &Memory{m: map[Key]float64{}, chunks: map[Key][]byte{}, descriptions: map[Key]string{}}
+}
 
 func (c *Memory) Get(keys []Key) (map[Key]float64, error) {
 	c.mu.Lock()
@@ -96,6 +102,29 @@ func (c *Memory) PutChunks(layouts map[Key][]byte) error {
 	for k, v := range layouts {
 		if _, ok := c.chunks[k]; !ok {
 			c.chunks[k] = v
+		}
+	}
+	return nil
+}
+
+func (c *Memory) GetDescriptions(keys []Key) (map[Key]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[Key]string{}
+	for _, k := range keys {
+		if v, ok := c.descriptions[k]; ok {
+			out[k] = v
+		}
+	}
+	return out, nil
+}
+
+func (c *Memory) PutDescriptions(descriptions map[Key]string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, v := range descriptions {
+		if _, ok := c.descriptions[k]; !ok {
+			c.descriptions[k] = v
 		}
 	}
 	return nil

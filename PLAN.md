@@ -14,6 +14,7 @@ jrep "retries failed payments" src/
 | Form | A single CLI binary. No MCP server, no daemon. |
 | Language | Go |
 | Search | Every search asks Jev. There is no regex mode. |
+| Reuse | `jrep reuse` has Claude Haiku describe each chunk, then asks Jev about the descriptions, not the code. Claude logs in through the Anthropic Go SDK, or Claude Code's `claude` command. |
 | Keyword pre-pass | Off by default, so every chunk goes to Jev. `-s` turns it on. |
 | Ignored files | `.gitignore` is followed by default. `--no-ignore` turns it off. |
 | Test files | Skipped by default (they crowd out the code they test). Included when a question is about tests ("the tests for retries", "mocks the client"), or with `--tests`. |
@@ -42,9 +43,15 @@ jrep [flags] "question" [path...]
   --model jev-1.13.0     Jev model version
   --no-cache             don't read cached answers
   --clear-cache          delete this repo's cache and exit
+
+jrep reuse [flags] "what the new code will do" [path...]
+jrep reuse [flags] --code draft.go [path...]
+
+  --code FILE            draft code to check, instead of words ("-" reads stdin)
+  also --threshold, --no-ignore, --tests, --docs, --max-filesize, --model, --no-cache
 ```
 
-The API key is read from `TYPESAFE_API_KEY`.
+The API key is read from `TYPESAFE_API_KEY`. `jrep reuse` also needs a Claude login (see Reuse).
 
 Exit codes follow grep:
 
@@ -144,6 +151,38 @@ Request: `POST https://api.typesafe.ai/v1/systemone`
 - Rate limits: the docs say 100K tokens/s and 80 requests/s, but a scan at 4x that (320 req/s, 400K tok/s) ran on 2026-10-08 with no 429s. The client-side limiter uses 4x as its ceiling, halves on 429/529 (at most once a second), and adds back a tenth of the ceiling per quiet second. `JREP_MAX_RPS` / `JREP_MAX_TPS` set the ceiling.
 - On `429` or `529`, retry with exponential backoff and honour `retry-after`.
 
+## Reuse
+
+`jrep reuse` answers one question before an agent writes new code: build on existing code (`extend`, exit 0), or write new code (`create`, exit 1).
+
+```
+extend  0.88  src/billing/export.ts:10-64  exportInvoicesJSON(invoices)
+create  no code to extend above 0.60 (best: 0.12 src/billing/retry.ts:12-80)
+```
+
+```
+1. walk, chunk    as for a search
+2. phrase         Haiku turns the plan into two questions: what the new code does (the agent's
+                  own words, or Haiku's reading of a --code draft), and the broader kind of
+                  work it is part of ("exports invoices as CSV" → "exports invoices to an
+                  output format")
+3. describe       Haiku describes every chunk not already described, 15 chunks or 64 KB a call
+4. ask Jev        both questions about every description, in the same call a search makes: the
+                  description goes where the code would ("The `code` …")
+5. verdict        the best match for what it does, if above the threshold; else the best for
+                  the broader work; else create
+```
+
+Measured on jrep's own 134 chunks, with 12 features that exist, 3 that don't and 3 that existing code could be extended to:
+
+- **Descriptions, not code:** Jev ranked a right chunk first for all 12 by description, and the rest fell well behind ("skips lockfiles": 0.95 against 0.17 for the next chunk; by code, 0.89 against 0.94, with the main search loop first). Description and code together did no better than the description alone.
+- **Broadening, not "could be extended":** asking whether code "already does, or could be extended to do" a feature put config structs and `main` on top, since almost anything could be extended. Asking about the broader work found the JSON writer for CSV, the flag-value types for duration flags, and the gitignore code for skipping `vendor/`, while email, S3 and keychain stayed under 0.15.
+- **The same Jev call as a search:** sending each description in the `code` field gave the same verdict for all 10 reuse requests as a separate `summary` field asked "describes code that …", and for CSV found the JSON writer rather than the search that calls it. The gap to the next chunk was narrower on some ("skips lockfiles": 0.91 against 0.47), and it needs no change to how Jev is called or cached.
+- **Pasting code into the question** instead of describing it: "acts similar to this code" put the right function at 0.91 but unrelated flag parsing at 0.81.
+- **Speed:** Haiku described the 134 chunks in 20 s, five calls at a time through the `claude` CLI.
+
+**Login:** the Anthropic Go SDK finds the login: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, a profile named by `ANTHROPIC_PROFILE`, workload identity federation, or the active profile from `ant auth login`. Without one, jrep runs Claude Code's `claude -p` instead, which uses Claude Code's login, such as a Claude subscription; it runs with no tools, MCP servers, settings or skills, in the temp folder, and costs about 1,000 tokens of Claude Code context a call. `JREP_CLAUDE_LOGIN=api` or `claude` picks one. Both send the same model and prompts, so they share cached descriptions. A login is only needed when something isn't cached.
+
 ## Cache
 
 ```sql
@@ -159,6 +198,12 @@ CREATE TABLE chunks (
   layout     BLOB NOT NULL,      -- each chunk's lines, byte offset, length and signature
   last_used  INTEGER NOT NULL
 );
+
+CREATE TABLE descriptions (
+  key        BLOB PRIMARY KEY,   -- sha256(Claude model + prompt + path + code), or of a reuse plan
+  text       TEXT NOT NULL,      -- Claude's description, or a plan's two questions as JSON
+  last_used  INTEGER NOT NULL
+);
 ```
 
 - **Location:** `<user cache dir>/jrep/<sha256 of repo>.db`. On macOS that's `~/Library/Caches/jrep/`. The repo is the main checkout's folder, so every worktree of a repository shares one database (keys use repo-relative paths, so that's safe); outside git it is the search path.
@@ -168,7 +213,8 @@ CREATE TABLE chunks (
 - **Several processes at once:** WAL mode, a busy timeout and `INSERT OR IGNORE`. Switching a new file to WAL fails at once, without the busy timeout, while another process holds it, so opening retries.
 - **Interrupted runs:** answers are saved as they arrive, so a killed run keeps its progress.
 - **Cleanup:** at most once a day, delete rows unused for 30 days and answers from other model versions.
-- **Interface:** `Get(keys) map[key]noul`, `Put(key, noul)`, plus `GetChunks(keys)` and a batched `PutChunks(layouts)` for chunk layouts, so SQLite can be swapped out in one file.
+- **Descriptions** are keyed by the prompt as well as the model and chunk, so editing the prompt describes everything again. Jev's answers about a description are keyed by the description, so they are kept apart from answers about code.
+- **Interface:** `Get(keys) map[key]noul`, `Put(key, noul)`, plus `GetChunks(keys)` and a batched `PutChunks(layouts)` for chunk layouts, and `GetDescriptions` / `PutDescriptions` for descriptions, so SQLite can be swapped out in one file.
 
 ### Why SQLite
 
@@ -190,6 +236,7 @@ internal/walk/          file listing, gitignore, binary detection
 internal/chunk/         splitting files into chunks
 internal/prefilter/     -s keyword pre-pass
 internal/jev/           API client, rate limiter, retries (behind an interface)
+internal/describe/      Claude's descriptions and reuse questions (behind an interface)
 internal/cache/         SQLite cache (behind an interface)
 internal/search/        the pipeline: key → cache → Jev → rank
 internal/output/        text and JSON printing
@@ -200,7 +247,7 @@ internal/output/        text and JSON printing
 - Unit tests for walking, chunking, the pre-pass, cache keys and ranking.
 - A fake Jev client gives deterministic scores, so the whole pipeline is testable offline.
 - Concurrency test: several processes sharing one cache database.
-- A real-API smoke test that runs only when `TYPESAFE_API_KEY` is set.
+- A real-API smoke test that runs only when `TYPESAFE_API_KEY` is set, and ones for Claude when `ANTHROPIC_API_KEY` or `JREP_CLAUDE_SMOKE=1` is set.
 
 ## Build order
 
@@ -220,4 +267,5 @@ internal/output/        text and JSON printing
 - **Rate limits** can change without notice.
 - **Chunk size vs accuracy:** TypeSafe notes accuracy shifts as the state grows. Tune after measuring.
 - **Question wording:** how a search is phrased for Noul (e.g. "The `code` …") affects accuracy. Test a few templates.
-- **Privacy:** every chunk searched is sent to TypeSafe.
+- **Privacy:** every chunk searched is sent to TypeSafe. With `jrep reuse`, every chunk checked is also sent to Anthropic.
+- **Reuse on big repos:** a first `jrep reuse` describes every chunk it covers, so scope it to the folder the new code would live in. Haiku's rate limits on large repos are unmeasured.
