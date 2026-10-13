@@ -167,8 +167,9 @@ create  no code to extend above 0.60 (best: 0.12 src/billing/retry.ts:12-80)
                   work it is part of ("exports invoices as CSV" → "exports invoices to an
                   output format")
 3. describe       Haiku describes every chunk not already described, 15 chunks or 64 KB a call
-4. ask Jev        both questions about every description, in the same call a search makes: the
-                  description goes where the code would ("The `code` …")
+4. ask Jev        both questions about every description, in the same call a search makes for a
+                  lone chunk: the description goes where the code would ("The `code` …"), one
+                  description a call
 5. verdict        the best match for what it does, if above the threshold; else the best for
                   the broader work; else create
 ```
@@ -178,6 +179,7 @@ Measured on jrep's own 134 chunks, with 12 features that exist, 3 that don't and
 - **Descriptions, not code:** Jev ranked a right chunk first for all 12 by description, and the rest fell well behind ("skips lockfiles": 0.95 against 0.17 for the next chunk; by code, 0.89 against 0.94, with the main search loop first). Description and code together did no better than the description alone.
 - **Broadening, not "could be extended":** asking whether code "already does, or could be extended to do" a feature put config structs and `main` on top, since almost anything could be extended. Asking about the broader work found the JSON writer for CSV, the flag-value types for duration flags, and the gitignore code for skipping `vendor/`, while email, S3 and keychain stayed under 0.15.
 - **The same Jev call as a search:** sending each description in the `code` field gave the same verdict for all 10 reuse requests as a separate `summary` field asked "describes code that …", and for CSV found the JSON writer rather than the search that calls it. The gap to the next chunk was narrower on some ("skips lockfiles": 0.91 against 0.47), and it needs no change to how Jev is called or cached.
+- **One description a call:** packing a file's chunks into one call, which costs code nothing in accuracy, sank descriptions: asked about "exports search results to a file in a structured format", the JSON writer's description scored 0.76 alone and 0.20 packed with the rest of `output.go`, turning extend into create. Each description goes alone; descriptions are short, so that is still a fraction of a cent for jrep's 173 chunks.
 - **Pasting code into the question** instead of describing it: "acts similar to this code" put the right function at 0.91 but unrelated flag parsing at 0.81.
 - **Speed:** Haiku described the 134 chunks in 20 s, five calls at a time through the `claude` CLI.
 

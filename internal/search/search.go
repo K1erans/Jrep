@@ -42,6 +42,13 @@ type Options struct {
 	ReadCache bool    // false still writes answers, but never reads them
 	Workers   int     // concurrent Jev calls; 0 means DefaultWorkers
 
+	// Alone sends each chunk in a call of its own instead of packing a
+	// file's chunks together. Packing suits code, not Claude's
+	// descriptions of it: asked about "exports search results to a file in
+	// a structured format", the JSON writer's description scored 0.76
+	// alone and 0.20 packed with the rest of its file.
+	Alone bool
+
 	// OnCacheError hears about failed cache writes, which don't stop a search.
 	OnCacheError func(error)
 
@@ -151,7 +158,11 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 	if len(tasks) > 0 && opts.OnAsk != nil {
 		opts.OnAsk(len(tasks))
 	}
-	if err := parallel(ctx, packs(chunks, tasks), cmp.Or(opts.Workers, DefaultWorkers), ask); err != nil {
+	limit := packBytes
+	if opts.Alone {
+		limit = 0
+	}
+	if err := parallel(ctx, packs(chunks, tasks, limit), cmp.Or(opts.Workers, DefaultWorkers), ask); err != nil {
 		return nil, err
 	}
 
@@ -163,14 +174,14 @@ func Run(ctx context.Context, chunks []Chunk, client jev.Client, store cache.Cac
 }
 
 // packs groups tasks into Jev calls: neighbouring chunks of one file, up
-// to packBytes of code. Chunks are in file order, so a file's chunks are
-// neighbours.
-func packs(chunks []Chunk, tasks []task) [][]task {
+// to limit bytes of code, or each alone when limit is 0. Chunks are in file
+// order, so a file's chunks are neighbours.
+func packs(chunks []Chunk, tasks []task, limit int) [][]task {
 	var out [][]task
 	size := 0
 	for _, t := range tasks {
 		c := chunks[t.chunk]
-		if n := len(out); n > 0 && chunks[out[n-1][0].chunk].Path == c.Path && size+len(c.Code) <= packBytes {
+		if n := len(out); n > 0 && chunks[out[n-1][0].chunk].Path == c.Path && limit > 0 && size+len(c.Code) <= limit {
 			out[n-1] = append(out[n-1], t)
 			size += len(c.Code)
 			continue

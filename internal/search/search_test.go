@@ -237,6 +237,24 @@ func TestAPackStaysUnderItsSizeCap(t *testing.T) {
 	}
 }
 
+func TestAloneSendsEachChunkInItsOwnRequest(t *testing.T) {
+	fake := &jevtest.Fake{Score: scores(paymentScores)}
+	o := opts("retries failed payments")
+	o.Alone = true
+	if _, err := Run(context.Background(), fileChunks(), fake, cache.NewMemory(), o); err != nil {
+		t.Fatal(err)
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 4 {
+		t.Fatalf("want a request per chunk, got %d", len(reqs))
+	}
+	for _, r := range reqs {
+		if len(r.Chunks) != 1 {
+			t.Fatalf("request %+v", r)
+		}
+	}
+}
+
 func TestAnswersSurviveCodeMovingWithinItsFile(t *testing.T) {
 	store := cache.NewMemory()
 	if _, err := Run(context.Background(), chunks(), &jevtest.Fake{Score: scores(paymentScores)}, store, opts("retries failed payments")); err != nil {

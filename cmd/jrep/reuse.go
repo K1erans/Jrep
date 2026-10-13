@@ -101,6 +101,7 @@ func (a app) reuse(ctx context.Context, cfg reuseConfig) (int, error) {
 		Model:        cfg.Model,
 		Threshold:    cfg.Threshold,
 		Top:          1,
+		Alone:        true,
 		ReadCache:    !cfg.NoCache,
 		OnCacheError: w.cacheError,
 		OnAsk:        a.onAsk,
