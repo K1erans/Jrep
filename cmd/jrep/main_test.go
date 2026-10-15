@@ -484,3 +484,30 @@ func TestWorktreesShareTheCache(t *testing.T) {
 		t.Fatal("--clear-cache in a worktree clears the shared cache")
 	}
 }
+
+func TestPrepassWithNoKeywordsNamesTheFlag(t *testing.T) {
+	project(t, billing)
+	h := newHarness(scorer())
+	if code := h.run("-s", "the of and"); code != exitError || !strings.Contains(h.errOut.String(), "jrep: -s: ") || !strings.Contains(h.errOut.String(), "pass --keywords") {
+		t.Fatalf("exit %d, stderr %q", code, h.errOut.String())
+	}
+}
+
+// brokenWrites is a cache that opens but can't save answers.
+type brokenWrites struct{ *cache.Memory }
+
+func (brokenWrites) Put(cache.Key, float64) error { return errors.New("disk full") }
+
+func TestCacheThatFailsToSaveWarnsOnce(t *testing.T) {
+	project(t, billing)
+	h := newHarness(scorer())
+	h.openCache = func(string, string) (cache.Cache, func() error, error) {
+		return brokenWrites{cache.NewMemory()}, func() error { return nil }, nil
+	}
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, h.errOut.String())
+	}
+	if n := strings.Count(h.errOut.String(), "jrep: warning: cache not working: disk full\n"); n != 1 {
+		t.Fatalf("want one warning, stderr %q", h.errOut.String())
+	}
+}

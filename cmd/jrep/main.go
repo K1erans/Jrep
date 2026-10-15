@@ -135,11 +135,22 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		return exitMatch, a.clearCache(repo)
 	}
 
+	// jinter's pre-pass error doesn't name the flag, so check first.
+	if cfg.Prepass && cfg.Keywords == "" && len(prefilter.Keywords(cfg.Questions)) == 0 {
+		return exitError, errors.New("-s: no keywords left in the question after dropping common words; pass --keywords")
+	}
 	client, err := a.client()
 	if err != nil {
 		return exitError, err
 	}
-	engine := jinter.Engine{Client: client, OpenCache: a.openCache}
+	// jinter reports a cache that won't open and one that fails later to
+	// the same callback, already explained in the first case only.
+	opened := true
+	engine := jinter.Engine{Client: client, OpenCache: func(repo, model string) (cache.Cache, func() error, error) {
+		c, closeCache, err := a.openCache(repo, model)
+		opened = err == nil
+		return c, closeCache, err
+	}}
 	maxSize := cfg.MaxFileSize
 	if maxSize == 0 {
 		maxSize = -1 // jinter reads 0 as its default
@@ -161,8 +172,13 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		NoCache:     cfg.NoCache,
 		// A broken cache costs money, not correctness: warn once and carry on.
 		OnCacheError: func(err error) {
-			if !warned {
-				warned = true
+			if warned {
+				return
+			}
+			warned = true
+			if opened {
+				fmt.Fprintf(a.stderr, "jrep: warning: cache not working: %v\n", err)
+			} else {
 				fmt.Fprintf(a.stderr, "jrep: warning: %v\n", err)
 			}
 		},

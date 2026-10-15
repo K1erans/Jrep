@@ -195,7 +195,7 @@ internal/output/        text and JSON printing
 jinter                  Engine.Search: the pipeline end to end
 jinter/walk/            file listing, gitignore, binary detection
 jinter/chunk/           splitting files into chunks
-jinter/prefilter/       -s keyword pre-pass
+jinter/prefilter/       keyword pre-pass (-s)
 jinter/jev/             API client, rate limiter, retries (behind an interface)
 jinter/cache/           SQLite cache (behind an interface)
 jinter/search/          key → cache → Jev → rank
@@ -206,7 +206,7 @@ user cache folder), not jinter's default, through `Engine.OpenCache`.
 
 ## Testing
 
-- Unit tests for walking, chunking, the pre-pass, cache keys and ranking.
+- Unit tests for walking, chunking, the pre-pass, cache keys and ranking, in jinter.
 - A fake Jev client gives deterministic scores, so the whole pipeline is testable offline.
 - Concurrency test: several processes sharing one cache database.
 - A real-API smoke test that runs only when `TYPESAFE_API_KEY` is set.
