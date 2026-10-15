@@ -182,11 +182,11 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 				fmt.Fprintf(a.stderr, "jrep: warning: %v\n", err)
 			}
 		},
+		OnFiles: func(rep jinter.Report) { a.reportSkipped(rep, cfg) },
 		OnAsk: func(n int) {
 			fmt.Fprintf(a.stderr, "jrep: asking Jev about %d %s\n", n, plural(n, "chunk", "chunks"))
 		},
 	})
-	a.reportSkipped(rep, cfg)
 	if errors.Is(err, jinter.ErrNotAsked) {
 		return exitError, fmt.Errorf("--refine: no cached answers for %q: ask it first, over the same files, or drop --refine", cfg.Refine)
 	}
@@ -194,11 +194,7 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		return exitError, err
 	}
 	if cfg.Prepass && rep.Chunks == 0 && cfg.Refine == "" {
-		f, err := prefilter.New(cfg.Keywords, cfg.Questions)
-		if err != nil {
-			return exitError, fmt.Errorf("-s: %w", err)
-		}
-		fmt.Fprintf(a.stderr, "jrep: -s kept no chunks (keywords: %s)\n", f.Pattern())
+		fmt.Fprintf(a.stderr, "jrep: -s kept 0 of %d chunks (keywords: %s)\n", rep.Split, rep.Keywords)
 	}
 	if cfg.Refine != "" {
 		fmt.Fprintf(a.stderr, "jrep: --refine: searched the %d %s that best matched %q\n", rep.Chunks, plural(rep.Chunks, "chunk", "chunks"), cfg.Refine)
@@ -219,12 +215,11 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 }
 
 // reportSkipped says on stderr which files were left out, so none are
-// skipped silently. It runs after the search, so the counts come with
-// errors too.
+// skipped silently. It runs before any chunk is sent to Jev.
 func (a app) reportSkipped(rep jinter.Report, cfg config) {
 	a.reportOversize(rep.Oversize, cfg.MaxFileSize)
 	if rep.TestsIncluded {
-		fmt.Fprintln(a.stderr, "jrep: searched test files too, since the question is about tests")
+		fmt.Fprintln(a.stderr, "jrep: searching test files too, since the question is about tests")
 	}
 	if rep.Tests > 0 {
 		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", rep.Tests, plural(rep.Tests, "file", "files"))

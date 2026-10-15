@@ -2,7 +2,7 @@ module jrep
 
 go 1.26.5
 
-require github.com/K1erans/jinter v0.0.0-20261010100731-235009b5dd27
+require github.com/K1erans/jinter v0.0.0-20261015173935-d29b325c01b1
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

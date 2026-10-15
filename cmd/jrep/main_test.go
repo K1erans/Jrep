@@ -144,7 +144,7 @@ func TestOversizeFilesAreListedOnStderr(t *testing.T) {
 	project(t, files)
 	h := newHarness(scorer())
 	h.run("--max-filesize", "1K", "retries failed payments")
-	if want := "jrep: asking Jev about 2 chunks\njrep: skipped 1 file over 1 KB: dist/app.js (use --max-filesize 0 to include)\n"; h.errOut.String() != want {
+	if want := "jrep: skipped 1 file over 1 KB: dist/app.js (use --max-filesize 0 to include)\njrep: asking Jev about 2 chunks\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 	if strings.Contains(h.out.String(), "dist/app.js") {
@@ -257,7 +257,7 @@ func TestPrepassThatKeepsNothingSaysWhy(t *testing.T) {
 	if code := h.run("-s", "--keywords", "kafka|rabbitmq", "retries failed payments"); code != exitNoMatch {
 		t.Fatalf("exit %d", code)
 	}
-	if want := "jrep: -s kept no chunks (keywords: kafka|rabbitmq)\n"; h.errOut.String() != want {
+	if want := "jrep: -s kept 0 of 2 chunks (keywords: kafka|rabbitmq)\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 }
@@ -342,7 +342,7 @@ func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
 			t.Fatal("test files aren't sent by default")
 		}
 	}
-	if want := "jrep: asking Jev about 2 chunks\njrep: 1 test file not searched (use --tests to include)\n"; h.errOut.String() != want {
+	if want := "jrep: 1 test file not searched (use --tests to include)\njrep: asking Jev about 2 chunks\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 
@@ -356,7 +356,7 @@ func TestTestFilesAreLeftOutAndTheNoMatchHintSaysSo(t *testing.T) {
 	if code := h.run("retries failed payments"); code != exitMatch {
 		t.Fatalf("exit %d", code)
 	}
-	if want := "jrep: asking Jev about 2 chunks\njrep: 1 test file not searched (use --tests to include)\n"; h.errOut.String() != want {
+	if want := "jrep: 1 test file not searched (use --tests to include)\njrep: asking Jev about 2 chunks\n"; h.errOut.String() != want {
 		t.Fatalf("skipped tests are reported even when something matched; stderr %q", h.errOut.String())
 	}
 }
@@ -375,7 +375,7 @@ func TestAQuestionAboutTestsSearchesTestFiles(t *testing.T) {
 	if !strings.Contains(h.out.String(), "src/billing/retry_test.go:1-3") {
 		t.Fatalf("out %q", h.out.String())
 	}
-	if want := "jrep: asking Jev about 3 chunks\njrep: searched test files too, since the question is about tests\n"; h.errOut.String() != want {
+	if want := "jrep: searching test files too, since the question is about tests\njrep: asking Jev about 3 chunks\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 }
@@ -394,7 +394,7 @@ func TestTranslationsAreLeftOutAndReported(t *testing.T) {
 	if n := len(fake.Requests()); n != 2 {
 		t.Fatalf("only the two source files should be sent, got %d requests", n)
 	}
-	if want := "jrep: 2 translation files not searched (name them to include)\n"; !strings.HasSuffix(h.errOut.String(), want) {
+	if want := "jrep: 2 translation files not searched (name them to include)\n"; !strings.HasPrefix(h.errOut.String(), want) {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 }
@@ -431,9 +431,9 @@ func TestDocsAndGeneratedFilesAreLeftOutAndReported(t *testing.T) {
 			t.Fatalf("%s isn't sent by default", r.Path)
 		}
 	}
-	want := "jrep: asking Jev about 2 chunks\n" +
-		"jrep: 1 generated file not searched (lockfiles, source maps, minified, SVG, node_modules; name it to include)\n" +
-		"jrep: 1 doc not searched (use --docs to include)\n"
+	want := "jrep: 1 generated file not searched (lockfiles, source maps, minified, SVG, node_modules; name it to include)\n" +
+		"jrep: 1 doc not searched (use --docs to include)\n" +
+		"jrep: asking Jev about 2 chunks\n"
 	if h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
