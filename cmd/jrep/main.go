@@ -8,18 +8,18 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
-	"unicode"
 
-	"jrep/internal/cache"
-	"jrep/internal/chunk"
-	"jrep/internal/jev"
+	"github.com/K1erans/jinter"
+	"github.com/K1erans/jinter/cache"
+	"github.com/K1erans/jinter/jev"
+	"github.com/K1erans/jinter/prefilter"
+	"github.com/K1erans/jinter/walk"
+
 	"jrep/internal/output"
-	"jrep/internal/prefilter"
-	"jrep/internal/search"
-	"jrep/internal/walk"
 )
 
 const (
@@ -30,12 +30,6 @@ const (
 
 // maxListed caps how many skipped files are named on stderr.
 const maxListed = 10
-
-// refineTop is how many chunks --refine searches. Replaying 24 rewordings
-// of 12 miniflux tasks, the right chunk was always in the earlier
-// question's top 11 and kept its rank with only the top 30 searched; 300
-// leaves room for bigger repos at about 9% of that 3,400-chunk scan.
-const refineTop = 300
 
 // app holds what main wires up for real and tests replace.
 type app struct {
@@ -72,7 +66,7 @@ func realApp(stdout, stderr io.Writer) app {
 			return jev.NewHTTP(key, opts), nil
 		},
 		openCache: func(repo, model string) (cache.Cache, func() error, error) {
-			dir, err := cache.Dir()
+			dir, err := cacheDir()
 			if err != nil {
 				return nil, nil, err
 			}
@@ -83,13 +77,27 @@ func realApp(stdout, stderr io.Writer) app {
 			return c, c.Close, nil
 		},
 		clearCache: func(repo string) error {
-			dir, err := cache.Dir()
+			dir, err := cacheDir()
 			if err != nil {
 				return err
 			}
 			return cache.Clear(cache.Path(dir, repo))
 		},
 	}
+}
+
+// cacheDir is the folder holding cache databases: $JREP_CACHE_DIR, or jrep
+// inside the user cache folder (~/Library/Caches/jrep on macOS). It isn't
+// jinter's default, so answers cached before jrep used jinter are kept.
+func cacheDir() (string, error) {
+	if d := os.Getenv("JREP_CACHE_DIR"); d != "" {
+		return d, nil
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "jrep"), nil
 }
 
 // noKey stands in for the Jev client when no API key is set, so searches
@@ -127,146 +135,95 @@ func (a app) search(ctx context.Context, cfg config) (int, error) {
 		return exitMatch, a.clearCache(repo)
 	}
 
-	tests := cfg.Tests || aboutTests(cfg.Questions)
-	files, err := walk.Walk(cfg.Paths, walk.Options{NoIgnore: cfg.NoIgnore, Tests: tests, Docs: cfg.Docs, MaxFileSize: cfg.MaxFileSize})
-	if err != nil {
-		return exitError, err
-	}
-	a.reportOversize(files.Oversize, cfg.MaxFileSize)
-	if tests && !cfg.Tests {
-		fmt.Fprintln(a.stderr, "jrep: searching test files too, since the question is about tests")
-	}
-	if files.Tests > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", files.Tests, plural(files.Tests, "file", "files"))
-	}
-	if files.Generated > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d generated %s not searched (lockfiles, source maps, minified, SVG, node_modules; name %s to include)\n",
-			files.Generated, plural(files.Generated, "file", "files"), plural(files.Generated, "it", "them"))
-	}
-	if files.Translations > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d translation %s not searched (name %s to include)\n",
-			files.Translations, plural(files.Translations, "file", "files"), plural(files.Translations, "it", "them"))
-	}
-	if files.Docs > 0 {
-		fmt.Fprintf(a.stderr, "jrep: %d %s not searched (use --docs to include)\n", files.Docs, plural(files.Docs, "doc", "docs"))
-	}
-
-	// A broken cache costs money, not correctness: warn and carry on.
-	store, closeStore, err := a.openCache(files.Repo, cfg.Model)
-	if err != nil {
-		fmt.Fprintf(a.stderr, "jrep: warning: cache unavailable, answers won't be saved: %v\n", err)
-		store, closeStore = cache.NewMemory(), func() error { return nil }
-	}
-	defer closeStore()
-	warned := false
-	onCacheError := func(err error) {
-		if !warned {
-			warned = true
-			fmt.Fprintf(a.stderr, "jrep: warning: cache not working: %v\n", err)
-		}
-	}
-
-	chunks, err := search.Load(files.Files, search.LoadOptions{
-		Chunk:        chunk.Default,
-		Store:        store,
-		ReadCache:    !cfg.NoCache,
-		OnCacheError: onCacheError,
-	})
-	if err != nil {
-		return exitError, err
-	}
-	if cfg.Prepass {
-		f, err := prefilter.New(cfg.Keywords, cfg.Questions)
-		if err != nil {
-			return exitError, fmt.Errorf("-s: %w", err)
-		}
-		kept := chunks[:0:0]
-		for _, c := range chunks {
-			if f.Keep(c.Code) {
-				kept = append(kept, c)
-			}
-		}
-		if len(kept) == 0 {
-			fmt.Fprintf(a.stderr, "jrep: -s kept 0 of %d chunks (keywords: %s)\n", len(chunks), f.Pattern())
-		}
-		chunks = kept
-	}
-	if cfg.Refine != "" {
-		chunks, err = search.Narrow(chunks, store, cfg.Model, cfg.Refine, refineTop)
-		if errors.Is(err, search.ErrNotAsked) {
-			return exitError, fmt.Errorf("--refine: no cached answers for %q: ask it first, over the same files, or drop --refine", cfg.Refine)
-		}
-		if err != nil {
-			return exitError, fmt.Errorf("--refine: %w", err)
-		}
-		fmt.Fprintf(a.stderr, "jrep: --refine: searching the %d %s that best matched %q\n", len(chunks), plural(len(chunks), "chunk", "chunks"), cfg.Refine)
-	}
-
 	client, err := a.client()
 	if err != nil {
 		return exitError, err
 	}
-	results, err := search.Run(ctx, chunks, client, store, search.Options{
-		Questions:    cfg.Questions,
-		Model:        cfg.Model,
-		Threshold:    cfg.Threshold,
-		Top:          cfg.Top,
-		ReadCache:    !cfg.NoCache,
-		OnCacheError: onCacheError,
+	engine := jinter.Engine{Client: client, OpenCache: a.openCache}
+	maxSize := cfg.MaxFileSize
+	if maxSize == 0 {
+		maxSize = -1 // jinter reads 0 as its default
+	}
+	warned := false
+	rep, err := engine.Search(ctx, jinter.Query{
+		Questions:   cfg.Questions,
+		Paths:       cfg.Paths,
+		Prepass:     cfg.Prepass,
+		Keywords:    cfg.Keywords,
+		Refine:      cfg.Refine,
+		Threshold:   cfg.Threshold,
+		Top:         cfg.Top,
+		NoIgnore:    cfg.NoIgnore,
+		Tests:       cfg.Tests,
+		Docs:        cfg.Docs,
+		MaxFileSize: maxSize,
+		Model:       cfg.Model,
+		NoCache:     cfg.NoCache,
+		// A broken cache costs money, not correctness: warn once and carry on.
+		OnCacheError: func(err error) {
+			if !warned {
+				warned = true
+				fmt.Fprintf(a.stderr, "jrep: warning: %v\n", err)
+			}
+		},
 		OnAsk: func(n int) {
 			fmt.Fprintf(a.stderr, "jrep: asking Jev about %d %s\n", n, plural(n, "chunk", "chunks"))
 		},
 	})
+	a.reportSkipped(rep, cfg)
+	if errors.Is(err, jinter.ErrNotAsked) {
+		return exitError, fmt.Errorf("--refine: no cached answers for %q: ask it first, over the same files, or drop --refine", cfg.Refine)
+	}
 	if err != nil {
 		return exitError, err
 	}
+	if cfg.Prepass && rep.Chunks == 0 && cfg.Refine == "" {
+		f, err := prefilter.New(cfg.Keywords, cfg.Questions)
+		if err != nil {
+			return exitError, fmt.Errorf("-s: %w", err)
+		}
+		fmt.Fprintf(a.stderr, "jrep: -s kept no chunks (keywords: %s)\n", f.Pattern())
+	}
+	if cfg.Refine != "" {
+		fmt.Fprintf(a.stderr, "jrep: --refine: searched the %d %s that best matched %q\n", rep.Chunks, plural(rep.Chunks, "chunk", "chunks"), cfg.Refine)
+	}
 
 	if cfg.JSON {
-		if err := output.JSON(a.stdout, results); err != nil {
+		if err := output.JSON(a.stdout, rep.Results); err != nil {
 			return exitError, err
 		}
-		output.NoMatches(a.stderr, results, cfg.Threshold)
+		output.NoMatches(a.stderr, rep.Results, cfg.Threshold)
 	} else {
-		output.Text(a.stdout, results, cfg.Threshold)
+		output.Text(a.stdout, rep.Results, cfg.Threshold)
 	}
-	for _, r := range results {
-		if len(r.Matches) > 0 {
-			return exitMatch, nil
-		}
+	if rep.Matched() {
+		return exitMatch, nil
 	}
 	return exitNoMatch, nil
 }
 
-// testWords in a question mean it is looking for tests, which are
-// otherwise skipped. "spec" is left out, as API specs are production code.
-var testWords = map[string]bool{
-	"test": true, "tests": true, "testing": true, "unittest": true, "unittests": true,
-	"testdata": true, "fixture": true, "fixtures": true, "mock": true, "mocks": true, "mocked": true,
-}
-
-// aboutTests reports whether any question asks about tests: "the tests
-// for retries", "mocks the payment client". "tests" followed by whether or
-// if is a verb, as in "tests whether the token expired", which asks about
-// production code.
-func aboutTests(questions []string) bool {
-	for _, q := range questions {
-		words := strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
-			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-		})
-		for i, w := range words {
-			if !testWords[w] {
-				continue
-			}
-			if i+1 < len(words) && strings.HasPrefix(w, "test") {
-				switch words[i+1] {
-				case "whether", "if":
-					continue
-				}
-			}
-			return true
-		}
+// reportSkipped says on stderr which files were left out, so none are
+// skipped silently. It runs after the search, so the counts come with
+// errors too.
+func (a app) reportSkipped(rep jinter.Report, cfg config) {
+	a.reportOversize(rep.Oversize, cfg.MaxFileSize)
+	if rep.TestsIncluded {
+		fmt.Fprintln(a.stderr, "jrep: searched test files too, since the question is about tests")
 	}
-	return false
+	if rep.Tests > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d test %s not searched (use --tests to include)\n", rep.Tests, plural(rep.Tests, "file", "files"))
+	}
+	if rep.Generated > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d generated %s not searched (lockfiles, source maps, minified, SVG, node_modules; name %s to include)\n",
+			rep.Generated, plural(rep.Generated, "file", "files"), plural(rep.Generated, "it", "them"))
+	}
+	if rep.Translations > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d translation %s not searched (name %s to include)\n",
+			rep.Translations, plural(rep.Translations, "file", "files"), plural(rep.Translations, "it", "them"))
+	}
+	if rep.Docs > 0 {
+		fmt.Fprintf(a.stderr, "jrep: %d %s not searched (use --docs to include)\n", rep.Docs, plural(rep.Docs, "doc", "docs"))
+	}
 }
 
 func plural(n int, one, many string) string {

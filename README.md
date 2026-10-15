@@ -26,6 +26,10 @@ make install                  # common-language grammars only, ~20 MB
 Run `jrep -h` for flags and environment variables. `PLAN.md` explains the
 design.
 
+The search engine is a Go library,
+[jinter](https://github.com/K1erans/jinter), for use in other projects;
+jrep is the command line around it.
+
 ## Agent skill
 
 `skills/jrep/SKILL.md` teaches an agent to use jrep well, chiefly to pass

@@ -184,16 +184,25 @@ SQLite costs about 5–10 MB of binary size. Pure Go keeps builds free of a C co
 
 ## Project layout
 
+The search engine is the Go library
+[jinter](https://github.com/K1erans/jinter), so other projects can use it;
+jrep is the command around it.
+
 ```
-cmd/jrep/main.go        flags, wiring, exit codes
-internal/walk/          file listing, gitignore, binary detection
-internal/chunk/         splitting files into chunks
-internal/prefilter/     -s keyword pre-pass
-internal/jev/           API client, rate limiter, retries (behind an interface)
-internal/cache/         SQLite cache (behind an interface)
-internal/search/        the pipeline: key → cache → Jev → rank
+cmd/jrep/main.go        flags, wiring, exit codes, stderr notices
 internal/output/        text and JSON printing
+
+jinter                  Engine.Search: the pipeline end to end
+jinter/walk/            file listing, gitignore, binary detection
+jinter/chunk/           splitting files into chunks
+jinter/prefilter/       -s keyword pre-pass
+jinter/jev/             API client, rate limiter, retries (behind an interface)
+jinter/cache/           SQLite cache (behind an interface)
+jinter/search/          key → cache → Jev → rank
 ```
+
+jrep keeps its cache in its own folder (`JREP_CACHE_DIR`, or `jrep` in the
+user cache folder), not jinter's default, through `Engine.OpenCache`.
 
 ## Testing
 

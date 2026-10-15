@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"jrep/internal/search"
+	"github.com/K1erans/jinter/search"
 )
 
 var payments = search.Result{
