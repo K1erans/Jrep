@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/K1erans/jinter"
 )
 
 const usage = `usage: jrep [flags] "question" [path...]
@@ -39,8 +41,6 @@ Environment:
   JREP_MAX_TPS           tokens per second ceiling (default 400000)
   JREP_CACHE_DIR         cache folder (default: jrep in the user cache folder)
 `
-
-const defaultModel = "jev-1.13.0"
 
 // errHelp asks for the usage text on stdout and a zero exit.
 var errHelp = errors.New("help requested")
@@ -113,8 +113,8 @@ func parseArgs(args []string) (config, error) {
 	cfg := config{
 		Threshold:   0.6,
 		Top:         10,
-		MaxFileSize: 1 << 20,
-		Model:       defaultModel,
+		MaxFileSize: jinter.DefaultMaxFileSize,
+		Model:       jinter.DefaultModel,
 	}
 	var extra stringList
 

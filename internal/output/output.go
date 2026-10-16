@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"jrep/internal/search"
+	"github.com/K1erans/jinter/search"
 )
 
 // Text prints matches best first. A question with no match gets one plain

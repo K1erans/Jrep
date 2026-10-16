@@ -1,3 +1,5 @@
+github.com/K1erans/jinter v0.0.0-20261015173935-d29b325c01b1 h1:BJJrE1INCWxjTQIws3L6X/5SJ6Q70eX4Io3cYmjMoDM=
+github.com/K1erans/jinter v0.0.0-20261015173935-d29b325c01b1/go.mod h1:Nzug0Ehp5sQqPdIBWIaqvG3fQN+lZCSDVVw2ZeM/m8g=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 h1:LMLX+LgTNWpfvCBdFebv6EsYotImrt/Ppc5cXIriCSo=

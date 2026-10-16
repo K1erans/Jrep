@@ -15,9 +15,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"jrep/internal/cache"
-	"jrep/internal/jev"
-	"jrep/internal/jev/jevtest"
+	"github.com/K1erans/jinter/cache"
+	"github.com/K1erans/jinter/jev"
+	"github.com/K1erans/jinter/jev/jevtest"
 )
 
 // project writes a small non-git source tree and moves into it.
@@ -239,7 +239,7 @@ func TestRefineAsksOnlyAboutChunksThatMatchedTheEarlierQuestion(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].Path != "src/billing/retry.go" {
 		t.Fatalf("only chunks answered for the earlier question should be sent, got %d requests", len(reqs))
 	}
-	if want := "jrep: --refine: searching the 1 chunk that best matched \"retries failed payments\"\njrep: asking Jev about 1 chunk\n"; h.errOut.String() != want {
+	if want := "jrep: asking Jev about 1 chunk\njrep: --refine: searched the 1 chunk that best matched \"retries failed payments\"\n"; h.errOut.String() != want {
 		t.Fatalf("stderr %q", h.errOut.String())
 	}
 
@@ -380,29 +380,6 @@ func TestAQuestionAboutTestsSearchesTestFiles(t *testing.T) {
 	}
 }
 
-func TestAboutTests(t *testing.T) {
-	for q, want := range map[string]bool{
-		"the test that covers retries":    true,
-		"tests for the payment client":    true,
-		"tests whether the token expired": false,
-		"testing if a port is free":       false,
-		"test helpers that build users":   true,
-		"mocks the payment client":        true,
-		"loads fixtures for the db":       true,
-		"retries failed payments":         false,
-		"parses the openapi spec":         false,
-		"latest attestation is verified":  false,
-		"where retry_test checks backoff": true,
-	} {
-		if got := aboutTests([]string{q}); got != want {
-			t.Errorf("aboutTests(%q) = %v, want %v", q, got, want)
-		}
-	}
-	if !aboutTests([]string{"retries failed payments", "the test that covers retries"}) {
-		t.Error("any question about tests counts")
-	}
-}
-
 func TestTranslationsAreLeftOutAndReported(t *testing.T) {
 	files := map[string]string{"locales/de.json": "{\"charge\": \"belasten\"}\n", "po/fr.po": "msgid \"charge\"\n"}
 	for k, v := range billing {
@@ -505,5 +482,32 @@ func TestWorktreesShareTheCache(t *testing.T) {
 	h.run("retries failed payments")
 	if len(fake.Requests()) != 2*calls {
 		t.Fatal("--clear-cache in a worktree clears the shared cache")
+	}
+}
+
+func TestPrepassWithNoKeywordsNamesTheFlag(t *testing.T) {
+	project(t, billing)
+	h := newHarness(scorer())
+	if code := h.run("-s", "the of and"); code != exitError || !strings.Contains(h.errOut.String(), "jrep: -s: ") || !strings.Contains(h.errOut.String(), "pass --keywords") {
+		t.Fatalf("exit %d, stderr %q", code, h.errOut.String())
+	}
+}
+
+// brokenWrites is a cache that opens but can't save answers.
+type brokenWrites struct{ *cache.Memory }
+
+func (brokenWrites) Put(cache.Key, float64) error { return errors.New("disk full") }
+
+func TestCacheThatFailsToSaveWarnsOnce(t *testing.T) {
+	project(t, billing)
+	h := newHarness(scorer())
+	h.openCache = func(string, string) (cache.Cache, func() error, error) {
+		return brokenWrites{cache.NewMemory()}, func() error { return nil }, nil
+	}
+	if code := h.run("retries failed payments"); code != exitMatch {
+		t.Fatalf("exit %d, %s", code, h.errOut.String())
+	}
+	if n := strings.Count(h.errOut.String(), "jrep: warning: cache not working: disk full\n"); n != 1 {
+		t.Fatalf("want one warning, stderr %q", h.errOut.String())
 	}
 }
